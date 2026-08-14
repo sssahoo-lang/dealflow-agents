@@ -58,3 +58,55 @@ def test_deal_stage_changed_event_carries_both_stages(bus):
 
     assert received[0].from_stage is DealStage.new
     assert received[0].to_stage is DealStage.won
+
+
+# --- wiring: app/events/handlers.py -----------------------------------------
+
+
+def test_register_agent_handlers_subscribes_lead_scoring():
+    from app.events.handlers import register_agent_handlers, score_new_deal
+
+    bus = EventBus()
+    register_agent_handlers(bus)
+
+    assert score_new_deal in bus._handlers[DealCreated]
+
+
+def test_handler_opens_and_closes_its_own_session(monkeypatch):
+    """It runs in a background task, so the request session is already closed."""
+    from app.events import handlers
+
+    closed = []
+
+    class FakeSession:
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(handlers, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(handlers.lead_scoring, "run", lambda db, deal_id: None)
+
+    handlers.score_new_deal(DealCreated(deal_id=1, company_id=1, owner_id=1))
+
+    assert closed == [True]
+
+
+def test_handler_closes_its_session_even_when_the_agent_raises(monkeypatch):
+    """A leaked connection per failed scoring would exhaust the pool."""
+    from app.events import handlers
+
+    closed = []
+
+    class FakeSession:
+        def close(self):
+            closed.append(True)
+
+    def boom(db, deal_id):
+        raise RuntimeError("agent exploded")
+
+    monkeypatch.setattr(handlers, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(handlers.lead_scoring, "run", boom)
+
+    with pytest.raises(RuntimeError):
+        handlers.score_new_deal(DealCreated(deal_id=1, company_id=1, owner_id=1))
+
+    assert closed == [True]

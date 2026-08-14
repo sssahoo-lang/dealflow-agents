@@ -27,3 +27,63 @@ def test_me_requires_token(client, users, token):
     resp = client.get("/auth/me", headers=token("rep@test.com"))
     assert resp.status_code == 200
     assert resp.json()["email"] == "rep@test.com"
+
+
+# --- token rejection paths ---------------------------------------------------
+
+
+def test_malformed_token_is_rejected(client):
+    resp = client.get("/auth/me", headers={"Authorization": "Bearer not-a-jwt"})
+
+    assert resp.status_code == 401
+
+
+def test_token_signed_with_the_wrong_secret_is_rejected(client, users):
+    from datetime import datetime, timedelta, timezone
+
+    from jose import jwt
+
+    from app.config import settings
+
+    forged = jwt.encode(
+        {
+            "sub": "admin@test.com",
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=60),
+        },
+        "not-the-real-secret",
+        settings.jwt_algorithm,
+    )
+
+    resp = client.get("/auth/me", headers={"Authorization": f"Bearer {forged}"})
+
+    assert resp.status_code == 401
+
+
+def test_expired_token_is_rejected(client, users):
+    from datetime import datetime, timedelta, timezone
+
+    from jose import jwt
+
+    from app.config import settings
+
+    expired = jwt.encode(
+        {
+            "sub": "admin@test.com",
+            "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+        },
+        settings.jwt_secret,
+        settings.jwt_algorithm,
+    )
+
+    resp = client.get("/auth/me", headers={"Authorization": f"Bearer {expired}"})
+
+    assert resp.status_code == 401
+
+
+def test_valid_token_for_a_deleted_user_is_rejected(client, db, users, token):
+    """The token stays cryptographically valid after the user row is gone."""
+    headers = token("other@test.com")
+    db.delete(users["other"])
+    db.commit()
+
+    assert client.get("/auth/me", headers=headers).status_code == 401
