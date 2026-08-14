@@ -47,7 +47,18 @@ def build_graph(db: Session, user: User):
         }
 
     def respond(state: NLQueryState) -> NLQueryState:
-        return {"answer": state["messages"][-1].content}
+        last = state["messages"][-1]
+        if getattr(last, "tool_calls", None):
+            # We got here from the round cap, not because the model was finished:
+            # its final message is a tool call, so its content is empty. Say so
+            # rather than returning a silent empty answer.
+            return {
+                "answer": (
+                    f"I couldn't finish answering that within {MAX_TOOL_ROUNDS} tool "
+                    "calls. Try narrowing the question."
+                )
+            }
+        return {"answer": last.content}
 
     def should_continue(state: NLQueryState) -> str:
         last = state["messages"][-1]
