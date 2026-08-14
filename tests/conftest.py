@@ -23,6 +23,15 @@ ADMIN_URL = "postgresql+psycopg://crm:crm@localhost:5433/postgres"
 def test_database():
     admin = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
     with admin.connect() as conn:
+        # DROP DATABASE blocks indefinitely on any other open connection -- a dev
+        # server or a crashed run left connected turns `pytest` into a silent hang.
+        # Evict them first so the suite is never at the mercy of a stray process.
+        conn.execute(
+            text(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = 'crm_test' AND pid <> pg_backend_pid()"
+            )
+        )
         conn.execute(text("DROP DATABASE IF EXISTS crm_test"))
         conn.execute(text("CREATE DATABASE crm_test"))
     engine = create_engine(settings.database_url)
