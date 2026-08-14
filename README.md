@@ -50,9 +50,10 @@ server-side from the authenticated user. A confused or adversarially-prompted mo
 cannot widen its own access — `tests/test_agents/test_nl_query_tools.py` asserts this
 directly.
 
-**One LLM construction point.** Every Claude call goes through
+**One LLM construction point.** Every model call goes through
 `app/agents/llm.py::get_chat_model()`. Tests patch that one function, so the default
-suite makes zero network calls and needs no API key.
+suite makes zero network calls and needs no API key — and swapping providers is a
+config change, not a code change.
 
 **Sync SQLAlchemy.** No concurrency requirement justifies async here, and it keeps
 LangGraph nodes as plain functions.
@@ -61,7 +62,7 @@ LangGraph nodes as plain functions.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env          # add your ANTHROPIC_API_KEY
+cp .env.example .env          # runs as-is; no API key required
 docker compose up -d db
 .venv/bin/alembic upgrade head
 .venv/bin/python scripts/seed.py
@@ -72,6 +73,26 @@ Swagger UI at http://localhost:8000/docs
 
 Seeded logins (all password `demo1234`): `admin@demo.com` (admin),
 `rep@demo.com` (owns deals 1–2), `rep2@demo.com` (owns deal 3).
+
+### LLM provider
+
+`LLM_PROVIDER` selects what backs the agents:
+
+| Value | Behavior |
+|---|---|
+| `stub` (default) | Deterministic, no API key, no network. Every endpoint, graph, tool call, and DB write runs for real. |
+| `anthropic` | Real Claude calls. Requires `ANTHROPIC_API_KEY`. |
+
+The stub is **not a language model and doesn't imitate one** — it's rule-based
+(`app/agents/stub.py`). Lead scores come from a weighted heuristic over deal value,
+contact seniority, activity count, and stage; the query agent routes to a tool by
+keyword. What it exercises is the *system*: the event bus fires, the LangGraph state
+machines execute their real conditional edges, the RBAC-scoped tools run real queries,
+and the results are written to Postgres. What it can't demonstrate is judgment — the
+rows the query agent returns are live, but the sentences around them are templated.
+Set `LLM_PROVIDER=anthropic` for that.
+
+This exists so the repo is runnable by anyone who clones it, and so CI needs no secret.
 
 ## Verifying it works
 
