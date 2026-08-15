@@ -1,10 +1,16 @@
 # DealFlow Agents — Milestone 2: Java analytics service
 
+> **Status: the Python half is built. Steps 1–3 are done and shipped; steps 4–9 (the
+> Java service itself) are not started.** See "Build order" at the bottom for the
+> per-step state, and "What actually shipped" immediately below for the places
+> implementation diverged from or went beyond this plan.
+
 ## Context
 
 Milestone 1 is **done, tested, and pushed** to github.com/sssahoo-lang/dealflow-agents (private):
 a FastAPI + SQLAlchemy + Postgres CRM with JWT/RBAC and three LangGraph/Claude agents
-(lead scoring, follow-up drafting, NL query), 38 tests passing with the LLM mocked.
+(lead scoring, follow-up drafting, NL query). The suite has since grown from 38 to
+**110 tests**, still with no network calls and no API key required.
 
 Milestone 2 adds a **Java/Spring Boot analytics service** — a second service in a second
 language, fed by a transactional outbox. Two reasons this earns its place rather than
@@ -27,7 +33,50 @@ scope = analytics + rules engine.
 
 ---
 
-## 1. Outbox (Python side)
+## What actually shipped (steps 1–3)
+
+The design below held up — the outbox schema, the `flush → record → commit` ordering, the
+money-as-string and denormalisation rules, and the "no status column" decision all went in
+as written. Five things are worth recording because they were **decided during
+implementation**, not in this plan:
+
+**An `LLM_PROVIDER` switch, so the repo runs with no API key.** `stub` (the default) is a
+rule-based stand-in; `anthropic` is real Claude. This was not part of the original plan but
+it changes the project's economics: anyone can clone and run the full system, and CI needs
+no secret. It also means the Java service's future CI can exercise the Python stack for free.
+
+**Agent-written activities deliberately stay out of the event stream.** The agents write
+their reasoning notes and drafts straight to the `activities` table inside their graphs, so
+they never reach `activity.created`. This is correct — an agent scoring a deal is not contact
+with the customer, and counting it would stop the planned "no touchpoint in 14 days" rule
+from ever firing on a genuinely stale deal. It was originally an accident of where the
+writes happen; it is now documented in `app/events/schemas.py` and pinned by a test.
+
+**`Deal.owner` relationship added.** Needed to denormalise `owner_email` / `owner_name` into
+the payload. No schema change — `owner_id` already existed.
+
+**Snapshots use their own event types** (`deal.snapshot`, not `deal.created`), so a consumer
+can distinguish "current state as of the backfill" from "a change that happened". The
+backfill also skips any aggregate that already has an outbox row, so a deal created after
+the outbox shipped is never double-counted in a projection.
+
+**Two bugs found by the new tests, both fixed:**
+- The NL query agent returned HTTP 200 with an **empty answer string** when it hit
+  `MAX_TOOL_ROUNDS` — the last message on that path is a tool call, whose content is `""`.
+  It now reports the limit it hit.
+- `conftest.py` could hang indefinitely: `DROP DATABASE` blocks on any other open
+  connection, so a leftover dev server turned `pytest` into a silent stall (one run took
+  26 minutes instead of 6 seconds). The fixture now terminates other `crm_test` backends
+  first.
+
+**One environment note for step 8:** the Docker VM clock was observed running ~72s behind
+the host. Harmless so far — `occurred_at` is server-set, and tests compare against the
+database clock — but it is direct evidence that the injected-`Clock` and duration-based
+comparison prescribed for the rules engine are necessary rather than theoretical.
+
+---
+
+## 1. Outbox (Python side) — ✅ built
 
 New `app/models/outbox.py` → table `outbox_events`:
 
@@ -80,11 +129,13 @@ Losing a publish loses an LLM call, not an event. Replacing it means writing a s
 bootstrap; rerunnable via `WHERE NOT EXISTS`.
 
 **Test impact: zero existing tests change.** `conftest.py` auto-creates and auto-truncates
-any model registered on `Base`. Adds `tests/test_outbox.py` (~8 tests) → 46 total.
+any model registered on `Base`. *(Confirmed in practice — all 86 pre-existing tests passed
+with no test file edited. `tests/test_outbox.py` added 20 tests, `tests/test_backfill.py`
+another 11.)*
 
 ---
 
-## 2. Consumption, offsets, idempotency
+## 2. Consumption, offsets, idempotency — ⬜ Java side, not started
 
 **The trap:** BIGSERIAL ids are assigned at INSERT but visible at COMMIT. Txn A takes id
 100, txn B takes 101 and commits first; a poller storing `last_seen = 101` **never sees
@@ -121,7 +172,7 @@ types without bricking the consumer.
 
 ---
 
-## 3. Database ownership
+## 3. Database ownership — ⬜ not started
 
 **Separate schema `analytics`, same `crm` database, separate Postgres role.**
 Not a separate database — the anti-join above needs one joinable transaction.
@@ -152,7 +203,7 @@ surprise. Liquibase and `ddl-auto=update` both rejected.
 
 ---
 
-## 4. The Java service
+## 4. The Java service — ⬜ not started
 
 **Java 21 + Spring Boot 3.4.x**, Maven, multi-stage Dockerfile (Maven build stage → slim
 JRE runtime). No `spring-boot-starter-security` — a ~60-line `OncePerRequestFilter` beats
@@ -222,7 +273,7 @@ global filter that can be forgotten.
 
 ---
 
-## 5. docker-compose
+## 5. docker-compose — ⬜ not started
 
 Four services: `db` (+ `TZ=UTC`, `PGTZ=UTC`, init scripts), a one-shot **`migrate`**
 service running `alembic upgrade head`, `api` (the Python app, containerized), and
@@ -284,15 +335,36 @@ No test path needs `ANTHROPIC_API_KEY`; the Java service never calls an LLM.
 
 Each step ends green before the next starts.
 
-1. **Outbox model + migration** → `alembic upgrade head`; `pytest` → 38 passed.
-2. **`events/outbox.py` + service refactor** → 38 passed with *zero test files edited*, then `tests/test_outbox.py` → 46 passed.
-3. **JWT claims + backfill script** → 46 passed; backfill twice = same row count.
-4. **DB role + Python container + compose skeleton** → `/health` responds; `\dn` shows `analytics`; the three grant checks return false/true/false.
-5. **Java skeleton** (Dockerfile, pom, Flyway V1/V2, actuator, JWT filter) → `/actuator/health` UP; no token → 401, Python-issued token → 200.
-6. **Poller + projection handlers** → create a deal, 3s later `analytics.deal_projection` has the row; IT suite green.
-7. **Analytics queries + controllers** → all four endpoints sane; rep sees own row, admin sees all.
-8. **Rules engine + scheduler + findings** → `POST /rules/run` opens a finding; running again doesn't duplicate it; adding an activity resolves it.
-9. **README, contract tests both sides, retention note** → clean `down -v && up` passes the full E2E script.
+**Done — the Python half. No Java required for any of these.**
+
+1. ✅ **Outbox model + migration.** `outbox_events` created; migration verified to
+   round-trip (`downgrade` drops cleanly, `upgrade` recreates). No test files needed
+   editing — `conftest` creates and truncates anything registered on `Base`.
+   Commit `01cd5a7`. → 86 tests.
+2. ✅ **`events/outbox.py` + service refactor.** All 86 pre-existing tests passed with
+   *zero test files edited*, which is the evidence the refactor is transparent. Then
+   `tests/test_outbox.py` added, including atomicity in both directions. Verified live:
+   create + stage-change + rename produced exactly two rows, `"250000.55"` intact.
+   Commit `86b3f52`. → 99 tests.
+3. ✅ **JWT claims + backfill script.** `uid`/`role` added as optional claims (Python
+   still authenticates off `sub`, so nothing moved). Backfill verified rerunnable:
+   dry-run wrote nothing, first run wrote 10 rows, second was a no-op, and a deal with a
+   real `deal.created` was skipped. Commit `e29217b`. → **110 tests.**
+
+**Not started — the Java service.** Every step below needs the Docker-based Java
+toolchain, which is a fresh setup (no JDK or Maven on the host by design).
+
+4. ⬜ **DB role + Python container + compose skeleton** → `/health` responds; `\dn` shows `analytics`; the three grant checks return false/true/false.
+5. ⬜ **Java skeleton** (Dockerfile, pom, Flyway V1/V2, actuator, JWT filter) → `/actuator/health` UP; no token → 401, Python-issued token → 200.
+6. ⬜ **Poller + projection handlers** → create a deal, 3s later `analytics.deal_projection` has the row; IT suite green.
+7. ⬜ **Analytics queries + controllers** → all four endpoints sane; rep sees own row, admin sees all.
+8. ⬜ **Rules engine + scheduler + findings** → `POST /rules/run` opens a finding; running again doesn't duplicate it; adding an activity resolves it.
+9. ⬜ **README, contract tests both sides, retention note** → clean `down -v && up` passes the full E2E script.
+
+**Picking this up again:** step 4 is the natural entry point, and the first real decision
+is the one flagged in §5 — whether `analytics` depends on `api` being healthy, or whether
+to extract a one-shot `migrate` service that both depend on. The latter is cleaner and is
+what §5 recommends.
 
 ### Verification highlight
 
@@ -308,16 +380,22 @@ curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN" >
 diff /tmp/before.json /tmp/after.json && echo "IDEMPOTENT"
 ```
 
-Plus: `pytest -q` → 46 passed (no API key) and
+Plus: `pytest -q` → **110 passed** (no API key) and
 `docker compose --profile test run --rm analytics-test` for the Java suite.
 
 ---
 
 ## Critical files
 
-- `app/models/outbox.py`, `app/events/outbox.py` — new; the contract boundary
-- `app/services/deal_service.py`, `app/services/crm_service.py` — `flush()` + `record()`
-- `app/core/security.py` — add `uid`/`role` claims
+**Built (steps 1–3):**
+- `app/models/outbox.py`, `app/events/outbox.py` — the contract boundary
+- `app/services/deal_service.py`, `app/services/crm_service.py` — `flush()` → `record()` → `commit()`
+- `app/core/security.py` — `uid`/`role` claims
+- `scripts/backfill_outbox.py` — rerunnable snapshot emitter
+- `contracts/events/deal.created.v1.json` — asserted from Python today, from Java at step 9
+- `tests/test_outbox.py`, `tests/test_backfill.py`, `tests/test_deal_events.py` — the safety net
+
+**Still to build (steps 4–9):**
+- `db/init/01-analytics-role.sql` — the `SELECT`-only role
 - `docker-compose.yml` — migrate/api/analytics services
-- `analytics-service/` — the whole new Java module
-- `contracts/events/*.v1.json` — shared fixtures asserted from both languages
+- `analytics-service/` — the whole Java module
