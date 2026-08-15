@@ -29,7 +29,11 @@ def login(db: DbSession, payload: LoginRequest):
     user = db.query(User).filter(User.email == payload.email).first()
     if user is None or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
-    return Token(access_token=create_access_token(user.email))
+    return Token(
+        access_token=create_access_token(
+            user.email, uid=user.id, role=user.role.value
+        )
+    )
 
 
 @router.get("/me", response_model=UserOut)

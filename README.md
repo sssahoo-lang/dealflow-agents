@@ -22,26 +22,52 @@ are stage-aware: a rep can advance a deal freely, but only an admin can close it
 ## Architecture
 
 ```
-POST /deals ──► deal_service ──► commit ──► BackgroundTasks ──► EventBus
-                                                                   │
-                                                          DealCreated
-                                                                   │
-                                                                   ▼
-                                              lead_scoring graph (LangGraph)
-                                    fetch_context → score_lead → [≥80?] → persist
+                    ┌─ one transaction ──────────────┐
+POST /deals ──► deal_service ──► INSERT deal         │
+                    │            INSERT outbox_event │──► commit
+                    └────────────────────────────────┘        │
+                                                              ├──► outbox_events
+                                                              │    (durable log;
+                                                              │     future Java
+                                                              │     consumer polls)
+                                                              │
+                                            BackgroundTasks ──┴──► EventBus
+                                                                     │
+                                                             DealCreated
+                                                                     │
+                                                                     ▼
+                                                lead_scoring graph (LangGraph)
+                                      fetch_context → score_lead → [≥80?] → persist
 ```
 
-Events publish **after** commit, so agents only ever react to durable state, and they
-publish through `BackgroundTasks` so a multi-second LLM call never delays the HTTP
-response.
+The deal and its event commit **together** — neither can exist without the other. The
+in-process bus fires only *after* that commit, so agents never react to state that might
+roll back, and it runs through `BackgroundTasks` so a multi-second LLM call never delays
+the HTTP response.
 
 ### Design decisions
 
-**In-process event bus, not a queue.** ~30 lines, no broker, no persistence. This is a
-deliberate simplification: if the process dies between commit and background execution,
-the event is lost. The production fix is a transactional outbox table plus a polling
-consumer. At this scale the bus buys decoupling and testability without the operational
-weight of Celery or Kafka.
+**Transactional outbox for durability; in-process bus for immediacy.** Every domain
+change writes an `outbox_events` row *in the same transaction* as the change itself, so
+the event and the change land together or not at all — `tests/test_outbox.py` proves
+both directions. The in-process bus is layered on top as a best-effort, low-latency
+notification for the lead-scoring agent: if the process dies before the background task
+runs, that publish is lost, but the event is still durably on disk for a consumer to
+replay. Scoping matters here — **analytics will be exactly-once-effect; lead scoring is
+best-effort.**
+
+The outbox table is deliberately append-only, with no `status`/`processed_at` column.
+Consumer progress belongs to the consumer, tracked in its own schema — which is what
+lets the planned Java service be granted `SELECT` and nothing else on this table. A
+status column would force write access and turn a published contract back into a shared
+mutable table.
+
+Two payload rules, both easy to get wrong and expensive to undo: **money crosses the
+wire as a string** (`"75000.10"`), never a JSON number, because a float round-trip
+silently loses precision; and `owner_email` / `company_name` are **denormalised into the
+payload** so a consumer can render a rep leaderboard without access to the `users` or
+`companies` tables. `contracts/events/deal.created.v1.json` is asserted from Python
+today and will be asserted from Java later, so neither side can change the shape alone.
 
 **RBAC lives inside the agent's tools, not just the API layer.** The NL query agent
 never sees or writes SQL. Each tool is a fixed SQLAlchemy `select()` with an allowlisted
@@ -123,22 +149,45 @@ curl -s -X POST localhost:8000/agents/query -H "Authorization: Bearer $TOKEN" \
   -d '{"question":"Which of my deals are worth the most?"}'
 ```
 
+The outbox, verified against the database rather than through the API:
+
 ```bash
-.venv/bin/python -m pytest tests/ -q    # 38 tests, mocked LLM, no network, no API key
+# A stage change writes an event; a rename does not.
+curl -s -X PATCH localhost:8000/deals/1 -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"stage":"negotiation"}'
+curl -s -X PATCH localhost:8000/deals/1 -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"Renamed"}'
+
+docker compose exec -T db psql -U crm -d crm -c \
+  "SELECT id, event_type, aggregate_id, payload->>'value' AS value,
+          payload->>'from_stage' AS from_stage, payload->>'to_stage' AS to_stage
+     FROM outbox_events ORDER BY id;"
+```
+
+Backfilling aggregates that predate the outbox (rerunnable — a second run is a no-op):
+
+```bash
+.venv/bin/python scripts/backfill_outbox.py --dry-run
+.venv/bin/python scripts/backfill_outbox.py
+```
+
+```bash
+.venv/bin/python -m pytest tests/ -q    # 110 tests, no network, no API key
 ```
 
 ## Layout
 
 ```
 app/
-  models/      SQLAlchemy ORM — User, Company, Contact, Deal, Activity
+  models/      SQLAlchemy ORM — User, Company, Contact, Deal, Activity, OutboxEvent
   schemas/     Pydantic request/response models
   core/        security.py (JWT, bcrypt), rbac.py (role + stage rules)
   api/         deps.py (auth dependencies), routes/
   services/    business logic; returns (entity, event) so routes control publishing
-  events/      bus.py, schemas.py, handlers.py
-  agents/      llm.py (single Claude factory), context.py, one package per agent
-tests/         38 tests; agent tests patch get_chat_model, never the network
+  events/      bus.py, schemas.py, handlers.py, outbox.py (event -> row)
+  agents/      llm.py (provider factory), stub.py, context.py, one package per agent
+contracts/     shared event fixtures, asserted from Python and later from Java
+tests/         110 tests; agent tests patch get_chat_model, never the network
 ```
 
 ## Not in scope yet
