@@ -40,4 +40,8 @@ class Deal(Base):
 
     company: Mapped["Company"] = relationship(back_populates="deals")
     primary_contact: Mapped["Contact | None"] = relationship()
+    # Read-only convenience for building outbox payloads: the owner's email and
+    # name are denormalised into the event so a consumer never needs the users
+    # table. No schema change -- owner_id already exists.
+    owner: Mapped["User"] = relationship()
     activities: Mapped[list["Activity"]] = relationship(back_populates="deal")

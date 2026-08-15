@@ -1,0 +1,30 @@
+{
+  "_comment": "Contract fixture for outbox event deal.created v1. Asserted from Python today and from the Java consumer later, so neither side can change the payload shape without the other's test going red.",
+  "aggregate_type": "deal",
+  "event_type": "deal.created",
+  "event_version": 1,
+  "payload_keys": [
+    "deal_id",
+    "name",
+    "stage",
+    "value",
+    "priority",
+    "score",
+    "expected_close_date",
+    "company_id",
+    "company_name",
+    "company_industry",
+    "owner_id",
+    "owner_email",
+    "owner_name",
+    "primary_contact_id",
+    "primary_contact_name",
+    "created_at",
+    "stage_changed_at"
+  ],
+  "notes": {
+    "value": "string with 2 decimal places, never a JSON number",
+    "created_at": "ISO 8601 with an explicit UTC offset",
+    "denormalised": "company_name, owner_email and owner_name exist so a consumer needs no access to the companies or users tables"
+  }
+}

@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.rbac import assert_can_access, assert_can_set_stage
+from app.events import outbox
 from app.events.schemas import DealCreated, DealStageChanged
 from app.models.deal import Deal
 from app.models.enums import RoleEnum
@@ -14,11 +15,16 @@ def create_deal(db: Session, user: User, payload: DealCreate) -> tuple[Deal, Dea
     assert_can_set_stage(user, payload.stage)
     deal = Deal(**payload.model_dump(), owner_id=user.id)
     db.add(deal)
-    db.commit()
-    db.refresh(deal)
-    return deal, DealCreated(
+    db.flush()  # assigns deal.id without ending the transaction
+    event = DealCreated(
         deal_id=deal.id, company_id=deal.company_id, owner_id=deal.owner_id
     )
+    # Same transaction as the INSERT above: the deal and its event commit together
+    # or neither does.
+    outbox.record(db, event)
+    db.commit()
+    db.refresh(deal)
+    return deal, event
 
 
 def list_deals(db: Session, user: User) -> list[Deal]:
@@ -56,6 +62,10 @@ def update_deal(
         from sqlalchemy import func
 
         deal.stage_changed_at = func.now()
+        # Flush first so the payload reflects the post-update row, not the
+        # pre-update one -- the event must describe the state it announces.
+        db.flush()
+        outbox.record(db, event)
 
     db.commit()
     db.refresh(deal)

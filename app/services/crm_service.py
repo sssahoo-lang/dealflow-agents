@@ -2,7 +2,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.rbac import assert_can_access
-from app.events.schemas import ContactCreated
+from app.events import outbox
+from app.events.schemas import ActivityCreated, ContactCreated
 from app.models.activity import Activity
 from app.models.company import Company
 from app.models.contact import Contact
@@ -30,9 +31,12 @@ def create_contact(
 ) -> tuple[Contact, ContactCreated]:
     contact = Contact(**payload.model_dump(), owner_id=user.id)
     db.add(contact)
+    db.flush()
+    event = ContactCreated(contact_id=contact.id, owner_id=contact.owner_id)
+    outbox.record(db, event)
     db.commit()
     db.refresh(contact)
-    return contact, ContactCreated(contact_id=contact.id, owner_id=contact.owner_id)
+    return contact, event
 
 
 def list_contacts(db: Session, user: User) -> list[Contact]:
@@ -51,6 +55,19 @@ def create_activity(db: Session, user: User, payload: ActivityCreate) -> Activit
 
     activity = Activity(**payload.model_dump(), created_by_user_id=user.id)
     db.add(activity)
+    db.flush()
+    # Recorded to the outbox but not published on the in-process bus: nothing
+    # subscribes in-process, and the future rules engine needs activity facts to
+    # answer "no touchpoint in 14 days". Keeping it out of the return signature
+    # means no route or test has to change.
+    outbox.record(
+        db,
+        ActivityCreated(
+            activity_id=activity.id,
+            deal_id=activity.deal_id,
+            contact_id=activity.contact_id,
+        ),
+    )
     db.commit()
     db.refresh(activity)
     return activity
