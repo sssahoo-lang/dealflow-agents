@@ -69,6 +69,27 @@ payload** so a consumer can render a rep leaderboard without access to the `user
 `companies` tables. `contracts/events/deal.created.v1.json` is asserted from Python
 today and will be asserted from Java later, so neither side can change the shape alone.
 
+**The analytics service's access limits are enforced by Postgres, not convention.**
+The forthcoming Java service connects as a dedicated `analytics` role that can `SELECT`
+exactly one table — `public.outbox_events`, the published contract — and owns its own
+`analytics` schema. It cannot read `deals`, `users`, `contacts`, `companies` or
+`activities`, and cannot write to the outbox, even if its code tried to.
+`tests/test_db_grants.py` asserts all of that, so the invariant can't quietly rot:
+
+```sql
+has_table_privilege('analytics','public.deals','SELECT')          -- false
+has_table_privilege('analytics','public.outbox_events','SELECT')  -- true
+has_table_privilege('analytics','public.outbox_events','UPDATE')  -- false
+```
+
+Sharing one Postgres instance between two services *is* the shared-database
+anti-pattern in the strict sense. What makes it defensible here is that the shared
+surface is a single append-only, versioned contract table rather than the CRM's
+internals — and that the boundary is enforced by grants rather than good intentions.
+The residual coupling is real and worth naming: Python can still break Java by changing
+the payload shape, which is what `event_version` and the shared contract fixtures exist
+to catch.
+
 **RBAC lives inside the agent's tools, not just the API layer.** The NL query agent
 never sees or writes SQL. Each tool is a fixed SQLAlchemy `select()` with an allowlisted
 set of filterable columns, a hard 50-row limit, and an ownership filter applied
@@ -96,6 +117,27 @@ docker compose up -d db
 ```
 
 Swagger UI at http://localhost:8000/docs
+
+### Or run the whole stack in Docker
+
+```bash
+docker compose up -d --build     # db → migrate (one-shot) → api
+docker compose exec -T api python scripts/seed.py
+```
+
+`migrate` runs `alembic upgrade head` and exits; `api` waits for it to *complete*
+(`service_completed_successfully`) rather than for another service to be healthy. The
+host workflow above still works unchanged — `db` publishes 5433 either way, so `.venv`,
+`alembic`, `pytest` and `seed.py` are unaffected. This adds a second way in, it doesn't
+replace the first.
+
+**Gotcha on an existing volume:** `db/init/` scripts run only when Postgres initialises
+an *empty* data directory. If you already have a `pgdata` volume, the analytics role
+won't be created automatically — apply it once by hand (the script is rerunnable):
+
+```bash
+docker compose exec -T db psql -U crm -d crm < db/init/01-analytics-role.sql
+```
 
 Seeded logins (all password `demo1234`): `admin@demo.com` (admin),
 `rep@demo.com` (owns deals 1–2), `rep2@demo.com` (owns deal 3).

@@ -7,15 +7,62 @@ services:
       POSTGRES_USER: crm
       POSTGRES_PASSWORD: crm
       POSTGRES_DB: crm
+      # Pin the timezone explicitly. The legacy created_at columns are naive
+      # `timestamp` and only hold UTC by accident of the image default -- make it
+      # a guarantee, since a second service now reads these timestamps.
+      TZ: UTC
+      PGTZ: UTC
+      ANALYTICS_DB_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs ONLY on an empty data directory. On an existing volume, apply by hand:
+      #   docker compose exec -T db psql -U crm -d crm < db/init/01-analytics-role.sql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U crm"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot: brings the schema to head, then exits. Both api and analytics wait
+  # for it to *complete*, which is cleaner than coupling the analytics boot to the
+  # API's health -- analytics needs the schema, not the API.
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://crm:crm@db:5432/crm
+      TZ: UTC
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://crm:crm@db:5432/crm
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TZ: UTC
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   pgdata:
