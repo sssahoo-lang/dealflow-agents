@@ -1,7 +1,7 @@
 # DealFlow Agents — Milestone 2: Java analytics service
 
-> **Status: the Python half is built. Steps 1–3 are done and shipped; steps 4–9 (the
-> Java service itself) are not started.** See "Build order" at the bottom for the
+> **Status: steps 1–6 are done and shipped. Step 7 is partially written (queries
+> exist, no controller yet); steps 8–9 are not started.** See "Build order" at the bottom for the
 > per-step state, and "What actually shipped" immediately below for the places
 > implementation diverged from or went beyond this plan.
 
@@ -9,8 +9,9 @@
 
 Milestone 1 is **done, tested, and pushed** to github.com/sssahoo-lang/dealflow-agents (private):
 a FastAPI + SQLAlchemy + Postgres CRM with JWT/RBAC and three LangGraph/Claude agents
-(lead scoring, follow-up drafting, NL query). The suite has since grown from 38 to
-**110 tests**, still with no network calls and no API key required.
+(lead scoring, follow-up drafting, NL query). The Python suite has since grown from 38
+to **125 tests**, still with no network calls and no API key required. The Java service
+adds **19** (10 unit, 9 integration).
 
 Milestone 2 adds a **Java/Spring Boot analytics service** — a second service in a second
 language, fed by a transactional outbox. Two reasons this earns its place rather than
@@ -135,7 +136,7 @@ another 11.)*
 
 ---
 
-## 2. Consumption, offsets, idempotency — ⬜ Java side, not started
+## 2. Consumption, offsets, idempotency — ✅ built
 
 **The trap:** BIGSERIAL ids are assigned at INSERT but visible at COMMIT. Txn A takes id
 100, txn B takes 101 and commits first; a poller storing `last_seen = 101` **never sees
@@ -172,7 +173,7 @@ types without bricking the consumer.
 
 ---
 
-## 3. Database ownership — ⬜ not started
+## 3. Database ownership — ✅ built
 
 **Separate schema `analytics`, same `crm` database, separate Postgres role.**
 Not a separate database — the anti-join above needs one joinable transaction.
@@ -203,7 +204,7 @@ surprise. Liquibase and `ddl-auto=update` both rejected.
 
 ---
 
-## 4. The Java service — ⬜ not started
+## 4. The Java service — 🟡 skeleton, consumer and queries built; controllers pending
 
 **Java 21 + Spring Boot 3.4.x**, Maven, multi-stage Dockerfile (Maven build stage → slim
 JRE runtime). No `spring-boot-starter-security` — a ~60-line `OncePerRequestFilter` beats
@@ -273,7 +274,7 @@ global filter that can be forgotten.
 
 ---
 
-## 5. docker-compose — ⬜ not started
+## 5. docker-compose — ✅ built
 
 Four services: `db` (+ `TZ=UTC`, `PGTZ=UTC`, init scripts), a one-shot **`migrate`**
 service running `alembic upgrade head`, `api` (the Python app, containerized), and
@@ -354,12 +355,33 @@ Each step ends green before the next starts.
 **Not started — the Java service.** Every step below needs the Docker-based Java
 toolchain, which is a fresh setup (no JDK or Maven on the host by design).
 
+4. ✅ **DB role + Python container + compose skeleton.** analytics role verified
+   live: reads the outbox, refused on deals, refused on writing the outbox, owns its
+   own schema. Deviation: the grant went in a *new* migration rather than editing the
+   applied one, which would never have re-run. Commit `1c12247`.
+5. ✅ **Java skeleton.** Flyway builds 11 tables, actuator healthcheck, JWT filter
+   verifying Python-minted tokens. Found a real cross-language break: the 23-byte
+   default secret worked in python-jose but jjwt enforces RFC 7518's 256-bit floor and
+   refused to boot. Fixed on both sides. Commit `4152726`.
+6. ✅ **Poller + projection handlers.** Anti-join consumer (not a watermark),
+   per-event transactions, backoff then dead-letter, `last_event_id` guard. Replay of
+   all events proved idempotent. Deviation: JDBC instead of JPA/`ddl-auto:validate` --
+   every write is a guarded upsert and every read an aggregate, so there were no entity
+   graphs to justify Hibernate. Fixed a floor-unaware `/admin/outbox/status` that
+   reported a caught-up consumer as 14 events behind. Commit `0779150`.
+7. 🟡 **Analytics queries + controllers** — repository and DTOs written (`0e64d0d`);
+   controller, money-as-string Jackson config, and scoping tests still to do.
+
+<details><summary>original step 4-7 wording</summary>
+
 4. ⬜ **DB role + Python container + compose skeleton** → `/health` responds; `\dn` shows `analytics`; the three grant checks return false/true/false.
 5. ⬜ **Java skeleton** (Dockerfile, pom, Flyway V1/V2, actuator, JWT filter) → `/actuator/health` UP; no token → 401, Python-issued token → 200.
 6. ⬜ **Poller + projection handlers** → create a deal, 3s later `analytics.deal_projection` has the row; IT suite green.
 7. ⬜ **Analytics queries + controllers** → all four endpoints sane; rep sees own row, admin sees all.
 8. ⬜ **Rules engine + scheduler + findings** → `POST /rules/run` opens a finding; running again doesn't duplicate it; adding an activity resolves it.
 9. ⬜ **README, contract tests both sides, retention note** → clean `down -v && up` passes the full E2E script.
+
+</details>
 
 **Picking this up again:** step 4 is the natural entry point, and the first real decision
 is the one flagged in §5 — whether `analytics` depends on `api` being healthy, or whether
@@ -380,7 +402,7 @@ curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN" >
 diff /tmp/before.json /tmp/after.json && echo "IDEMPOTENT"
 ```
 
-Plus: `pytest -q` → **110 passed** (no API key) and
+Plus: `pytest -q` → **125 passed** (no API key) and
 `docker compose --profile test run --rm analytics-test` for the Java suite.
 
 ---
