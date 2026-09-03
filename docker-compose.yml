@@ -44,7 +44,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://crm:crm@db:5432/crm
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
@@ -63,6 +63,52 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  analytics:
+    build: ./analytics-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/crm
+      SPRING_DATASOURCE_USERNAME: analytics
+      SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
+      # Must match the API's secret: this service verifies the same HS256 token.
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
+      TZ: UTC
+    ports:
+      - "8081:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+      # Needs the schema (outbox_events + the grant), not the API itself.
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      # Spring Boot needs longer than uvicorn to come up.
+      start_period: 40s
+
+  # Runs the Java suite inside the build stage, where Maven and the dependency
+  # cache already live. Not started by `docker compose up` -- invoke with:
+  #   docker compose --profile test run --rm analytics-test
+  # Testcontainers is deliberately not used at image-build time: `docker build`
+  # has no daemon, so integration tests run here against the real db service.
+  analytics-test:
+    profiles: ["test"]
+    build:
+      context: ./analytics-service
+      target: build
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/crm
+      SPRING_DATASOURCE_USERNAME: analytics
+      SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
+      TZ: UTC
+    depends_on:
+      db:
+        condition: service_healthy
+    command: mvn -B test
 
 volumes:
   pgdata:

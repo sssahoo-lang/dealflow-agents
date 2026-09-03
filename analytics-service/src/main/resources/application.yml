@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: analytics-service
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/crm}
+    username: ${SPRING_DATASOURCE_USERNAME:analytics}
+    password: ${SPRING_DATASOURCE_PASSWORD:analytics}
+    hikari:
+      # Small on purpose: this service shares a Postgres instance with the CRM,
+      # so it must not be able to starve the API of connections.
+      maximum-pool-size: 5
+      pool-name: analytics-pool
+
+  flyway:
+    enabled: true
+    schemas: analytics
+    default-schema: analytics
+    # The analytics role owns its schema, so no superuser is needed.
+    baseline-on-migrate: false
+
+  jpa:
+    hibernate:
+      # validate, never update: entity/schema drift becomes a startup failure
+      # instead of a surprise at runtime. Flyway is the only thing that may
+      # change the schema.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: analytics
+        jdbc:
+          time_zone: UTC
+    open-in-view: false
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+analytics:
+  jwt:
+    # Must match the Python API's JWT_SECRET.
+    secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-in-production-32b+}
+
+logging:
+  level:
+    com.dealflow.analytics: INFO
