@@ -105,10 +105,17 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
       JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
       TZ: UTC
+    volumes:
+      # Bind the live source so a test run picks up edits without an image
+      # rebuild, and cache ~/.m2 so it doesn't re-download Maven Central.
+      - ./analytics-service/src:/build/src:ro
+      - ./analytics-service/pom.xml:/build/pom.xml:ro
+      - maven-cache:/root/.m2
     depends_on:
       db:
         condition: service_healthy
-    command: mvn -B test
+    command: mvn -B verify
 
 volumes:
   pgdata:
+  maven-cache:

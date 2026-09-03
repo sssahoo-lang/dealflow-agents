@@ -1,0 +1,12 @@
+# Integration tests run against the real crm database and the real analytics
+# schema, because the point is to exercise the actual Flyway-built DDL and the
+# actual grants -- not a hand-maintained copy that can drift from them.
+#
+# The application under test therefore connects as `analytics` exactly as it does
+# in production. Test *fixtures* are seeded through a second connection as `crm`,
+# mirroring reality: the CRM writes the outbox, this service only reads it.
+analytics:
+  outbox:
+    # Tests drive pollOnce() directly, so a scheduled tick can't race assertions.
+    enabled: false
+    consumer-name: analytics

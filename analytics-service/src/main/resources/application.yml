@@ -19,19 +19,6 @@ spring:
     # The analytics role owns its schema, so no superuser is needed.
     baseline-on-migrate: false
 
-  jpa:
-    hibernate:
-      # validate, never update: entity/schema drift becomes a startup failure
-      # instead of a surprise at runtime. Flyway is the only thing that may
-      # change the schema.
-      ddl-auto: validate
-    properties:
-      hibernate:
-        default_schema: analytics
-        jdbc:
-          time_zone: UTC
-    open-in-view: false
-
 server:
   port: 8081
 
@@ -45,6 +32,16 @@ management:
       show-details: when-authorized
 
 analytics:
+  outbox:
+    consumer-name: analytics
+    # fixedDelay between polls. Seconds of staleness is fine for a dashboard;
+    # see OutboxPoller for why LISTEN/NOTIFY isn't worth it here.
+    poll-interval-ms: ${ANALYTICS_OUTBOX_POLL_INTERVAL_MS:2000}
+    batch-size: 200
+    max-attempts: 5
+    # Turned off in slice tests so no background poller races the assertions.
+    enabled: ${ANALYTICS_OUTBOX_ENABLED:true}
+
   jwt:
     # Must match the Python API's JWT_SECRET.
     secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-in-production-32b+}

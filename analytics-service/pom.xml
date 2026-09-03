@@ -27,9 +27,16 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
     </dependency>
+    <!-- JDBC, not JPA. Every write in this service is a guarded upsert
+         (ON CONFLICT DO UPDATE guarded on last_event_id) and every
+         read is an aggregate computed at query time. There are no entity graphs
+         to navigate, so Hibernate would be mapped over SQL we would write by hand
+         anyway. Tradeoff accepted: we lose the ddl-auto:validate startup drift
+         check, so the integration tests run every statement against the real
+         Flyway-built schema instead. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-data-jpa</artifactId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
@@ -93,6 +100,23 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!-- Deliberate split. `mvn test` runs *Test only: pure unit tests, no
+           database, fast enough for every edit. `mvn verify` adds *IT, which
+           need a live Postgres. Keeping them separate means a failing DB
+           connection can never be mistaken for a logic regression. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>
