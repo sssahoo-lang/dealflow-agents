@@ -67,11 +67,13 @@ public class AnalyticsRepository {
                        COALESCE(SUM(p.value) FILTER (WHERE c.to_stage = 'won'), 0) AS won_value,
                        COALESCE(SUM(p.value) FILTER (
                            WHERE p.stage NOT IN ('won','lost')), 0)               AS open_value,
-                       AVG(EXTRACT(EPOCH FROM (c.occurred_at - p.created_at)) / 86400.0)
-                           FILTER (WHERE c.to_stage = 'won')                      AS avg_days_to_close
+                       -- Rounded: a day count carrying 15 decimal places reads as
+                       -- noise and invites false precision.
+                       ROUND(AVG(EXTRACT(EPOCH FROM (c.occurred_at - p.created_at)) / 86400.0)
+                           FILTER (WHERE c.to_stage = 'won'), 2)                  AS avg_days_to_close
                   FROM analytics.deal_projection p
                   LEFT JOIN closed c ON c.deal_id = p.deal_id
-                 WHERE (:ownerId IS NULL OR p.owner_id = :ownerId)
+                 WHERE (CAST(:ownerId AS bigint) IS NULL OR p.owner_id = :ownerId)
                  GROUP BY p.owner_id
                  ORDER BY won_value DESC, open_value DESC
                  LIMIT :limit
@@ -103,6 +105,13 @@ public class AnalyticsRepository {
      *
      * <p>Using transitions alone would undercount: a deal created directly into
      * 'qualified' never produced a transition into it, but it plainly reached it.
+     *
+     * <p>"Reached" is ordinal, so a deal that jumped proposal -> won counts at every
+     * rung below won, including the negotiation it skipped. That keeps the funnel
+     * monotonic (a later rung can never exceed an earlier one), which is the property
+     * that makes a conversion rate meaningful. The alternative -- counting only stages
+     * actually transitioned into -- produces rates above 100% as soon as a rep skips a
+     * step, which is worse.
      */
     public List<ConversionRow> conversion(Long ownerId) {
         return jdbc.query(
@@ -119,7 +128,7 @@ public class AnalyticsRepository {
                                           WHERE t.deal_id = p.deal_id), 0)
                            ) AS max_ord
                       FROM analytics.deal_projection p
-                     WHERE (:ownerId IS NULL OR p.owner_id = :ownerId)
+                     WHERE (CAST(:ownerId AS bigint) IS NULL OR p.owner_id = :ownerId)
                 )
                 SELECT a.stage AS from_stage,
                        b.stage AS to_stage,
@@ -154,13 +163,14 @@ public class AnalyticsRepository {
                                PARTITION BY t.deal_id ORDER BY t.occurred_at) AS next_at
                       FROM analytics.deal_stage_transition t
                       JOIN analytics.deal_projection p ON p.deal_id = t.deal_id
-                     WHERE (:ownerId IS NULL OR p.owner_id = :ownerId)
+                     WHERE (CAST(:ownerId AS bigint) IS NULL OR p.owner_id = :ownerId)
                 )
                 SELECT stage,
-                       AVG(EXTRACT(EPOCH FROM (next_at - occurred_at)) / 86400.0) AS avg_days,
-                       PERCENTILE_CONT(0.5) WITHIN GROUP (
+                       ROUND(AVG(EXTRACT(EPOCH FROM (next_at - occurred_at)) / 86400.0), 2)
+                           AS avg_days,
+                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
                            ORDER BY EXTRACT(EPOCH FROM (next_at - occurred_at)) / 86400.0
-                       ) AS median_days,
+                       )::numeric, 2) AS median_days,
                        COUNT(*) AS sample_size
                   FROM steps
                  WHERE next_at IS NOT NULL
@@ -191,7 +201,7 @@ public class AnalyticsRepository {
                    AND p.expected_close_date IS NOT NULL
                    AND p.expected_close_date <
                        (CURRENT_DATE + make_interval(months => :horizon))
-                   AND (:ownerId IS NULL OR p.owner_id = :ownerId)
+                   AND (CAST(:ownerId AS bigint) IS NULL OR p.owner_id = :ownerId)
                  GROUP BY 1
                  ORDER BY 1
                 """,
@@ -211,7 +221,7 @@ public class AnalyticsRepository {
                   FROM analytics.deal_projection
                  WHERE stage NOT IN ('won','lost')
                    AND expected_close_date IS NULL
-                   AND (:ownerId IS NULL OR owner_id = :ownerId)
+                   AND (CAST(:ownerId AS bigint) IS NULL OR owner_id = :ownerId)
                 """,
                 params);
 
