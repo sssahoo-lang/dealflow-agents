@@ -1,7 +1,7 @@
 # DealFlow Agents — Milestone 2: Java analytics service
 
-> **Status: steps 1–7 are done and shipped. Steps 8–9 (rules engine, then docs and
-> cross-language contract tests) are not started.** See "Build order" at the bottom for the
+> **Status: steps 1–8 are done and shipped. Only step 9 remains (README, contract
+> tests asserted from both languages, retention note).** See "Build order" at the bottom for the
 > per-step state, and "What actually shipped" immediately below for the places
 > implementation diverged from or went beyond this plan.
 
@@ -11,7 +11,7 @@ Milestone 1 is **done, tested, and pushed** to github.com/sssahoo-lang/dealflow-
 a FastAPI + SQLAlchemy + Postgres CRM with JWT/RBAC and three LangGraph/Claude agents
 (lead scoring, follow-up drafting, NL query). The Python suite has since grown from 38
 to **125 tests**, still with no network calls and no API key required. The Java service
-adds **39** (15 unit, 24 integration).
+adds **69** (38 unit, 31 integration).
 
 Milestone 2 adds a **Java/Spring Boot analytics service** — a second service in a second
 language, fed by a transactional outbox. Two reasons this earns its place rather than
@@ -204,7 +204,7 @@ surprise. Liquibase and `ddl-auto=update` both rejected.
 
 ---
 
-## 4. The Java service — ✅ built (rules engine still to come, §8)
+## 4. The Java service — ✅ built
 
 **Java 21 + Spring Boot 3.4.x**, Maven, multi-stage Dockerfile (Maven build stage → slim
 JRE runtime). No `spring-boot-starter-security` — a ~60-line `OncePerRequestFilter` beats
@@ -383,7 +383,12 @@ toolchain, which is a fresh setup (no JDK or Maven on the host by design).
 5. ⬜ **Java skeleton** (Dockerfile, pom, Flyway V1/V2, actuator, JWT filter) → `/actuator/health` UP; no token → 401, Python-issued token → 200.
 6. ⬜ **Poller + projection handlers** → create a deal, 3s later `analytics.deal_projection` has the row; IT suite green.
 7. ⬜ **Analytics queries + controllers** → all four endpoints sane; rep sees own row, admin sees all.
-8. ⬜ **Rules engine + scheduler + findings** → `POST /rules/run` opens a finding; running again doesn't duplicate it; adding an activity resolves it.
+8. ✅ **Rules engine + scheduler + findings.** JSON condition trees, a pure evaluator,
+   injected `Clock` (14-day boundary tested exactly), hourly sweep. Verified live:
+   repeated sweeps left the finding count unchanged, and logging activity resolved two
+   findings on the next pass. Two bugs fixed -- `Map.of` rejecting the null that clears
+   a validation error (NPE surfacing as "Invalid condition: null"), and the jsonb
+   `detail` leaking the driver's PGobject wrapper into the API. Commit `6e9760b`.
 9. ⬜ **README, contract tests both sides, retention note** → clean `down -v && up` passes the full E2E script.
 
 </details>
