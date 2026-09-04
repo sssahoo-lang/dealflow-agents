@@ -42,6 +42,12 @@ analytics:
     # Turned off in slice tests so no background poller races the assertions.
     enabled: ${ANALYTICS_OUTBOX_ENABLED:true}
 
+  rules:
+    # Hourly at five past. A rule about the ABSENCE of activity has no triggering
+    # event, so this cannot be event-driven -- it has to be swept.
+    cron: ${ANALYTICS_RULES_CRON:0 5 * * * *}
+    enabled: ${ANALYTICS_RULES_ENABLED:true}
+
   jwt:
     # Must match the Python API's JWT_SECRET.
     secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-in-production-32b+}
