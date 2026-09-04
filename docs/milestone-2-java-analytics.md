@@ -1,7 +1,7 @@
 # DealFlow Agents — Milestone 2: Java analytics service
 
-> **Status: steps 1–6 are done and shipped. Step 7 is partially written (queries
-> exist, no controller yet); steps 8–9 are not started.** See "Build order" at the bottom for the
+> **Status: steps 1–7 are done and shipped. Steps 8–9 (rules engine, then docs and
+> cross-language contract tests) are not started.** See "Build order" at the bottom for the
 > per-step state, and "What actually shipped" immediately below for the places
 > implementation diverged from or went beyond this plan.
 
@@ -11,7 +11,7 @@ Milestone 1 is **done, tested, and pushed** to github.com/sssahoo-lang/dealflow-
 a FastAPI + SQLAlchemy + Postgres CRM with JWT/RBAC and three LangGraph/Claude agents
 (lead scoring, follow-up drafting, NL query). The Python suite has since grown from 38
 to **125 tests**, still with no network calls and no API key required. The Java service
-adds **19** (10 unit, 9 integration).
+adds **39** (15 unit, 24 integration).
 
 Milestone 2 adds a **Java/Spring Boot analytics service** — a second service in a second
 language, fed by a transactional outbox. Two reasons this earns its place rather than
@@ -204,7 +204,7 @@ surprise. Liquibase and `ddl-auto=update` both rejected.
 
 ---
 
-## 4. The Java service — 🟡 skeleton, consumer and queries built; controllers pending
+## 4. The Java service — ✅ built (rules engine still to come, §8)
 
 **Java 21 + Spring Boot 3.4.x**, Maven, multi-stage Dockerfile (Maven build stage → slim
 JRE runtime). No `spring-boot-starter-security` — a ~60-line `OncePerRequestFilter` beats
@@ -369,8 +369,13 @@ toolchain, which is a fresh setup (no JDK or Maven on the host by design).
    every write is a guarded upsert and every read an aggregate, so there were no entity
    graphs to justify Hibernate. Fixed a floor-unaware `/admin/outbox/status` that
    reported a caught-up consumer as 14 events behind. Commit `0779150`.
-7. 🟡 **Analytics queries + controllers** — repository and DTOs written (`0e64d0d`);
-   controller, money-as-string Jackson config, and scoping tests still to do.
+7. ✅ **Analytics queries + controllers.** Four read-time aggregates, scoping decided
+   once in the controller and passed down explicitly. Verified live: admin sees all
+   reps, each rep sees only their own row. Three bugs surfaced: an uninferable NULL
+   bind broke every admin query, `builder.modules()` clobbered Jackson's JavaTimeModule
+   and 500'd anything returning an Instant, and the funnel's ordinal-reach semantics
+   needed documenting (a won deal counts at every rung below it, which is what keeps
+   conversion rates under 100%). Commits `0e64d0d`, `48a803b`.
 
 <details><summary>original step 4-7 wording</summary>
 
