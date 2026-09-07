@@ -173,7 +173,7 @@ docker compose exec -T api python scripts/seed_demo.py   # optional: 26 deals of
 
 Then open **http://localhost:3000** and sign in with one of the demo accounts below;
 the login screen lists them with a one-click fill. The API is on :8000, the analytics
-service on :8080, Postgres on :5433. Every port binds to localhost — nothing is
+service on :8081, Postgres on :5433. Every port binds to localhost — nothing is
 deployed anywhere.
 
 `migrate` runs `alembic upgrade head` and exits; `api` waits for it to *complete*
@@ -382,5 +382,6 @@ outbox consumer, at which point the bus and `BackgroundTasks` both go away.
 **Two services, one Postgres instance.** Access is grant-enforced and the shared surface
 is a single versioned contract table, but they still share the instance's resources.
 
-**Not in scope:** frontend dashboard, email sending (the follow-up agent only drafts),
-and multi-turn agent conversations.
+**Not in scope:** email sending (the follow-up agent only drafts), multi-turn agent
+conversations, and a hosted demo — every port binds to localhost, so the dashboard runs
+where the stack runs.
