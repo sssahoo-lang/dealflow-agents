@@ -23,6 +23,24 @@ public class DealEventHandler implements EventHandler {
         "name", "stage", "priority", "expected_close_date", "created_at", "stage_changed_at"
     };
 
+    /**
+     * Every payload field this handler reads for a created/snapshot event.
+     *
+     * <p>Exposed so the contract test can assert it against
+     * {@code contracts/events/deal.created.v1.json} -- the same file the Python
+     * producer asserts. That stops this service quietly depending on a field the
+     * CRM never promised to send, which would break the moment the producer
+     * dropped it.
+     */
+    public static final Set<String> CREATED_PAYLOAD_FIELDS;
+
+    static {
+        Set<String> fields = new java.util.HashSet<>(Set.of(TEXT_FIELDS));
+        fields.add("value");
+        fields.add("score");
+        CREATED_PAYLOAD_FIELDS = Set.copyOf(fields);
+    }
+
     private final ProjectionRepository projections;
 
     public DealEventHandler(ProjectionRepository projections) {
