@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
 
+    # The dashboard runs on its own origin. Comma-separated so compose can
+    # override it with a single env var.
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # "stub" runs the whole app with no API key and no network calls.
     # Switch to "anthropic" once ANTHROPIC_API_KEY is set.
     llm_provider: str = "stub"
@@ -27,6 +31,10 @@ class Settings(BaseSettings):
     follow_up_model: str = "claude-sonnet-5"
     nl_query_model: str = "claude-sonnet-5"
 
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     @field_validator("jwt_secret")
     @classmethod

@@ -53,6 +53,12 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     /** Health and docs stay open; everything else needs a token. */
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
+        // CORS preflight carries no Authorization header by design; filtering it
+        // would 401 the preflight and break every cross-origin request before the
+        // real one is ever sent.
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            return true;
+        }
         String path = request.getRequestURI();
         return path.startsWith("/actuator/health") || path.equals("/");
     }

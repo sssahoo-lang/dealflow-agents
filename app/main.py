@@ -2,9 +2,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import agents, auth, crm
+from app.config import settings
 from app.events.bus import event_bus
 from app.events.handlers import register_agent_handlers
 from app.services.errors import NotFound
@@ -19,6 +21,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DealFlow Agents", version="0.1.0", lifespan=lifespan)
+
+# The dashboard is a separate origin (its own container on :3000), so the browser
+# needs explicit permission to call this API. Origins are listed rather than "*"
+# because credentials are involved -- a wildcard would be both refused by the
+# browser and wrong in principle.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(NotFound)
