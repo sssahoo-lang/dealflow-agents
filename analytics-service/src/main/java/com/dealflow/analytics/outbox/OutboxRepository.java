@@ -54,7 +54,8 @@ public class OutboxRepository {
                 rs.getString("event_type"),
                 rs.getInt("event_version"),
                 payload,
-                rs.getTimestamp("occurred_at").toInstant());
+                rs.getTimestamp("occurred_at").toInstant(),
+                rs.getString("trace_context"));
     }
 
     /**
@@ -66,7 +67,8 @@ public class OutboxRepository {
         return jdbc.query(
                 """
                 SELECT e.id, e.aggregate_type, e.aggregate_id, e.event_type,
-                       e.event_version, e.payload::text AS payload, e.occurred_at
+                       e.event_version, e.payload::text AS payload, e.occurred_at,
+                       e.trace_context
                   FROM public.outbox_events e
                   LEFT JOIN analytics.processed_event p ON p.event_id = e.id
                   LEFT JOIN analytics.failed_event    f ON f.event_id = e.id

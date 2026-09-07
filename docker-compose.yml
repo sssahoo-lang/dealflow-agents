@@ -40,6 +40,20 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # All-in-one Jaeger (v2 -- natively OTLP, no COLLECTOR_OTLP_ENABLED flag
+  # needed): collector, in-memory storage (traces don't need to survive a
+  # restart -- this demonstrates the plumbing, it isn't a retention system) and
+  # the query UI, one container. OTLP/HTTP ingestion on 4318, UI on 16686.
+  # See app/observability/tracing.py for why the exporters that feed this are
+  # opt-in rather than always-on, and README's "Design decisions" for the story
+  # of what a trace here actually shows: a single trace spanning the FastAPI
+  # request, the durable outbox row, and the Java consumer that later resumes it.
+  jaeger:
+    image: jaegertracing/jaeger:2.1.0
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
   api:
     build: .
     environment:
@@ -52,6 +66,11 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Empty disables tracing (the default everywhere except compose -- see
+      # app/observability/tracing.py). Set here so `docker compose up` shows a
+      # live trace with no extra step; a bare `pytest` run leaves this unset and
+      # stays exactly as dependency-free as every other suite in this repo.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       TZ: UTC
     ports:
       - "8000:8000"
@@ -60,6 +79,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 10s
@@ -73,10 +94,14 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/crm
       SPRING_DATASOURCE_USERNAME: analytics
       SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
-      # Must match the API's secret: this service verifies the same HS256 token.
       # No signing material here. This service fetches the CRM's PUBLIC keys and
       # can verify tokens without being able to mint one.
       JWKS_URI: ${JWKS_URI:-http://api:8000/.well-known/jwks.json}
+      # Tracing on by default in compose (off everywhere else -- see
+      # analytics-service/src/main/resources/application.yml). This is what lets
+      # `docker compose up` show a live trace with no extra step.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
       TZ: UTC
     ports:
       - "8081:8081"
@@ -86,6 +111,8 @@ services:
       # Needs the schema (outbox_events + the grant), not the API itself.
       migrate:
         condition: service_completed_successfully
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health | grep -q UP"]
       interval: 10s

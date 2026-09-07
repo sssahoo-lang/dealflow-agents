@@ -18,7 +18,12 @@ public record EventEnvelope(
         String eventType,
         int eventVersion,
         JsonNode payload,
-        Instant occurredAt) {
+        Instant occurredAt,
+        /** The W3C traceparent this row was recorded under, as raw JSON text
+         *  (e.g. {@code {"traceparent":"00-...-...-01"}}), or null when the CRM
+         *  had tracing disabled (the default) or this event predates the column.
+         *  Never part of {@code payload} -- see the trace_context migration. */
+        String traceContext) {
 
     /** Null-safe string read; the producer may legitimately omit optional fields. */
     public String text(String field) {

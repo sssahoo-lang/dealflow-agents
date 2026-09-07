@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, SmallInteger, String, func
+from sqlalchemy import BigInteger, DateTime, Index, Integer, SmallInteger, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +46,15 @@ class OutboxEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    # The W3C traceparent this event was recorded under, as JSON (e.g.
+    # '{"traceparent": "00-<trace-id>-<span-id>-01"}'). Deliberately a sibling
+    # column, not a payload field: the payload is a versioned cross-language
+    # contract asserted in contracts/events/*.json, and trace context is
+    # observability plumbing that must be free to change shape without touching
+    # it. Nullable because tracing is opt-in (see app/observability/tracing.py) --
+    # most rows in most environments will have none, and that is correct.
+    trace_context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_outbox_aggregate", "aggregate_type", "aggregate_id", "id"),

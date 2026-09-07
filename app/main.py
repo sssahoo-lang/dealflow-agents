@@ -9,6 +9,7 @@ from app.api.routes import agents, auth, crm
 from app.config import settings
 from app.events.bus import event_bus
 from app.events.handlers import register_agent_handlers
+from app.observability.tracing import setup_tracing
 from app.services.errors import NotFound
 
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DealFlow Agents", version="0.1.0", lifespan=lifespan)
+
+# No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set -- see app/observability/tracing.py
+# for why tracing is opt-in rather than always-on.
+setup_tracing(app)
 
 # The dashboard is a separate origin (its own container on :3000), so the browser
 # needs explicit permission to call this API. Origins are listed rather than "*"

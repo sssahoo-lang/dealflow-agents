@@ -28,6 +28,7 @@ from app.models.activity import Activity
 from app.models.contact import Contact
 from app.models.deal import Deal
 from app.models.outbox import OutboxEvent
+from app.observability.tracing import inject_trace_context
 
 EVENT_VERSION = 1
 
@@ -178,5 +179,11 @@ def record(db: Session, event: DomainEvent) -> OutboxEvent:
     it describes land together or not at all.
     """
     row = to_envelope(event, db)
+    # The one line that makes cross-service tracing possible: this request's
+    # trace context, captured at the moment the fact becomes durable, so a
+    # consumer that reads this row an arbitrary amount of time later can resume
+    # the same trace instead of starting a disconnected one. NULL when tracing
+    # is disabled (the default) -- see app/observability/tracing.py.
+    row.trace_context = inject_trace_context()
     db.add(row)
     return row

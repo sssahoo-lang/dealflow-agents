@@ -58,6 +58,30 @@ analytics:
     refresh-cooldown: ${JWKS_REFRESH_COOLDOWN:30s}
     timeout: ${JWKS_TIMEOUT:3s}
 
+# Distributed tracing, opt-in. `otel.sdk.disabled` is the master switch: it
+# defaults to true, so `mvn test` and the analytics-test compose profile stay
+# exactly as network-free as before this existed. docker-compose flips it off
+# and points otlp.endpoint at the bundled Jaeger, so `docker compose up` shows a
+# live trace with no extra step.
+otel:
+  sdk:
+    disabled: ${OTEL_SDK_DISABLED:true}
+  service:
+    name: dealflow-analytics
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+  traces:
+    exporter: otlp
+  # This service has no incoming HTTP traffic worth tracing on its own -- the
+  # story is the outbox event that arrived, not the /actuator/health poll. Both
+  # off; OutboxDispatcher creates its span by hand, linked to the CRM's request.
+  instrumentation:
+    spring-webmvc:
+      enabled: false
+    logback-appender:
+      enabled: false
+
 logging:
   level:
     com.dealflow.analytics: INFO

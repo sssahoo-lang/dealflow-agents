@@ -67,9 +67,9 @@
     </dependency>
 
     <!-- Deliberately NOT spring-boot-starter-security: this service only needs to
-         verify one HS256 signature. A ~60-line OncePerRequestFilter beats pulling
-         in the whole filter chain, the default user generator, and CSRF config
-         that would immediately be disabled again. -->
+         verify an RS256 signature against a fetched JWKS. A ~120-line filter beats
+         pulling in the whole filter chain, the default user generator, and CSRF
+         config that would immediately be disabled again. -->
     <dependency>
       <groupId>io.jsonwebtoken</groupId>
       <artifactId>jjwt-api</artifactId>
@@ -93,7 +93,43 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- Distributed tracing, opt-in (otel.sdk.disabled defaults to true; see
+         application.yml). The Spring Boot starter auto-configures an SDK
+         TracerProvider from those properties rather than requiring a javaagent,
+         which keeps the deployment a plain `java -jar`. Manual spans in
+         OutboxDispatcher are what actually connect a consumed event back to the
+         CRM request that produced it; this dependency is what gives those spans
+         somewhere real to go. -->
+    <dependency>
+      <groupId>io.opentelemetry.instrumentation</groupId>
+      <artifactId>opentelemetry-spring-boot-starter</artifactId>
+    </dependency>
+    <!-- InMemorySpanExporter and a throwaway SDK; lets OutboxTracingTest assert
+         real parent/child linkage rather than mocking the tracer and trusting
+         that the mock's contract matches the real one. -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
+
+  <dependencyManagement>
+    <dependencies>
+      <!-- opentelemetry-instrumentation-bom imports opentelemetry-bom transitively,
+           which is what pins opentelemetry-sdk-testing's version alongside the
+           API/SDK versions the starter itself uses; one version list, not two
+           that could drift apart. -->
+      <dependency>
+        <groupId>io.opentelemetry.instrumentation</groupId>
+        <artifactId>opentelemetry-instrumentation-bom</artifactId>
+        <version>2.11.0</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <build>
     <plugins>

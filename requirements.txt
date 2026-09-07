@@ -14,3 +14,11 @@ langchain-anthropic==0.3.1
 langchain-core==0.3.28
 pytest==8.3.4
 httpx==0.28.1
+
+# Tracing -- opt-in, off by default (see app/observability/tracing.py). Not part
+# of the "no network calls" test/CI story: these packages import cleanly and do
+# nothing unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-http==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0

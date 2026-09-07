@@ -1,7 +1,7 @@
 # DealFlow Agents
 
 [![CI](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml)
-&nbsp;222 tests — 137 Python, 85 Java — running on every push with **no API key, no
+&nbsp;233 tests — 142 Python, 91 Java — running on every push with **no API key, no
 network calls, and no repository secrets**.
 
 Two services around one event stream. A **Python/FastAPI** sales CRM with three
@@ -174,6 +174,19 @@ is **false for every operator except `is_null`** — including `!=`, which reads
 absence should match. The `Clock` is injected, so the 14-day staleness boundary is tested
 at exactly 14 days rather than approximately.
 
+**A trace follows one deal across the language boundary, not just across a request.**
+`docker compose up` runs a bundled Jaeger; create a deal and its whole life is one trace
+at http://localhost:16686 — the FastAPI request that returns in milliseconds, then (a
+poll interval later, in a different process, in a different language) the Java span that
+consumes the outbox row and writes the projection. There is no synchronous call between
+those two halves for a tracing library to auto-propagate across, so the propagation here
+is explicit: `app/observability/tracing.py` injects the current span's W3C `traceparent`
+into a `trace_context` column on the outbox row *at the moment the fact becomes durable*;
+`OutboxTracing.java` reads it back later and resumes that trace instead of starting a new
+one linked only by coincidence. Same trade as everywhere else in this repo — opt-in,
+off by default, so `pytest` and `mvn verify` stay exactly as network-free as they were
+before this existed; only `docker compose up` turns it on.
+
 ## Setup
 
 ```bash
@@ -197,8 +210,8 @@ docker compose exec -T api python scripts/seed_demo.py   # optional: 26 deals of
 
 Then open **http://localhost:3000** and sign in with one of the demo accounts below;
 the login screen lists them with a one-click fill. The API is on :8000, the analytics
-service on :8081, Postgres on :5433. Every port binds to localhost — nothing is
-deployed anywhere.
+service on :8081, Jaeger's trace UI on **:16686**, Postgres on :5433. Every port binds
+to localhost — nothing is deployed anywhere.
 
 `migrate` runs `alembic upgrade head` and exits; `api` waits for it to *complete*
 (`service_completed_successfully`) rather than for another service to be healthy. The
@@ -349,8 +362,8 @@ of retention.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                       # 137, no network, no API key
-docker compose --profile test run --rm analytics-test      # 85 Java (54 unit, 31 integration)
+.venv/bin/python -m pytest tests/ -q                       # 142, no network, no API key
+docker compose --profile test run --rm analytics-test      # 91 Java (60 unit, 31 integration)
 ```
 
 Both suites run without an API key. The Java suite runs inside the build stage, where
@@ -375,9 +388,10 @@ app/
   services/    business logic; returns (entity, event) so routes control publishing
   events/      bus.py, schemas.py, handlers.py, outbox.py (event -> row)
   agents/      llm.py (provider factory), stub.py, context.py, one package per agent
+  observability/  tracing.py -- opt-in OTel setup, off unless OTEL_EXPORTER_OTLP_ENDPOINT is set
 scripts/       seed.py, backfill_outbox.py, prune_outbox.py
 contracts/     shared event fixtures, asserted from BOTH languages
-tests/         130 tests; agent tests patch get_chat_model, never the network
+tests/         142 tests; agent tests patch get_chat_model, never the network
 
 analytics-service/           Java/Spring Boot, built by Maven inside Docker
   outbox/      poller, dispatcher, per-event-type handlers (the consumer)
@@ -386,6 +400,7 @@ analytics-service/           Java/Spring Boot, built by Maven inside Docker
   rules/       condition tree, pure evaluator, engine, hourly scheduler
   security/    JwtAuthFilter + JwksKeyProvider — verifies the CRM's tokens and,
                holding no signing material, could not mint one
+  observability/  OutboxTracing -- resumes the CRM's trace instead of starting a new one
   db/migration/  Flyway: V1 read model, V2 rules
 
 frontend/                    Next.js 15 / React 19 dashboard, its own container

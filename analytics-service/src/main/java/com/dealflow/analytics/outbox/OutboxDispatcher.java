@@ -1,6 +1,7 @@
 package com.dealflow.analytics.outbox;
 
 import com.dealflow.analytics.config.AnalyticsProperties;
+import com.dealflow.analytics.observability.OutboxTracing;
 import com.dealflow.analytics.outbox.handler.EventHandler;
 import com.dealflow.analytics.outbox.handler.EventHandlerRegistry;
 import java.util.Optional;
@@ -19,14 +20,17 @@ public class OutboxDispatcher {
     private final EventHandlerRegistry registry;
     private final OutboxRepository outbox;
     private final AnalyticsProperties properties;
+    private final OutboxTracing tracing;
 
     public OutboxDispatcher(
             EventHandlerRegistry registry,
             OutboxRepository outbox,
-            AnalyticsProperties properties) {
+            AnalyticsProperties properties,
+            OutboxTracing tracing) {
         this.registry = registry;
         this.outbox = outbox;
         this.properties = properties;
+        this.tracing = tracing;
     }
 
     /**
@@ -37,6 +41,16 @@ public class OutboxDispatcher {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void dispatch(EventEnvelope event) {
+        // Everything below runs inside a span resumed from the trace the CRM
+        // recorded on this row -- see OutboxTracing for why that is what makes
+        // this one trace rather than two coincidentally-related ones.
+        tracing.traced(event, () -> {
+            dispatchWithinSpan(event);
+            return null;
+        });
+    }
+
+    private void dispatchWithinSpan(EventEnvelope event) {
         Optional<EventHandler> handler = registry.forType(event.eventType());
 
         if (handler.isEmpty()) {

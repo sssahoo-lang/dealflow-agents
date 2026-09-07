@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     follow_up_model: str = "claude-sonnet-5"
     nl_query_model: str = "claude-sonnet-5"
 
+    # Empty = tracing disabled (the default; see app/observability/tracing.py).
+    # Set to an OTLP/HTTP collector origin, e.g. http://jaeger:4318 -- what
+    # docker-compose sets so `docker compose up` shows a live trace out of the
+    # box, while a bare `pytest` run (no env var set) stays exactly as
+    # dependency-free as every other suite in this repo.
+    otel_exporter_otlp_endpoint: str = ""
+
 
     @property
     def cors_origins_list(self) -> list[str]:
