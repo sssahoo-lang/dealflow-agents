@@ -96,8 +96,12 @@ export function ForecastChart({
   if (!buckets.length) return null;
 
   const values = buckets.flatMap((b) => [Number(b.raw), Number(b.weighted)]);
-  const max = Math.max(...values, 1);
+  // Bars scale to the rounded-up axis maximum, not to the tallest bar, so every
+  // gridline lands on a whole number and the tallest bar stops short of the top
+  // instead of touching the frame.
+  const { max, ticks } = axisScale(Math.max(...values, 1));
   const H = 150;
+  const AXIS_W = 44;
 
   return (
     <div>
@@ -109,57 +113,138 @@ export function ForecastChart({
           <i className="swatch" style={{ background: "var(--series-2)" }} /> Unweighted
         </span>
       </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-end",
-          gap: 18,
-          height: H,
-          borderBottom: "1px solid var(--border)",
-          padding: "0 4px",
-        }}
-      >
-        {buckets.map((b, i) => {
-          const w = (Number(b.weighted) / max) * (H - 24);
-          const r = (Number(b.raw) / max) * (H - 24);
-          return (
+
+      <div style={{ display: "flex" }}>
+        {/* The value axis: labels sit on the gridlines they name, so each one is
+            read at the height it applies to rather than looked up in a legend. */}
+        <div style={{ width: AXIS_W, height: H, position: "relative", flexShrink: 0 }}>
+          {ticks.map((t) => (
             <div
-              key={b.month}
-              onMouseEnter={() => setHover(i)}
-              onMouseLeave={() => setHover(null)}
-              style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", position: "relative" }}
+              key={t}
+              style={{
+                position: "absolute", right: 8, bottom: (t / max) * H,
+                transform: "translateY(50%)",
+                fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap",
+              }}
             >
-              {hover === i && (
-                <div
-                  role="tooltip"
-                  style={{
-                    position: "absolute", bottom: "100%", left: "50%",
-                    transform: "translateX(-50%)", marginBottom: 6,
-                    background: "var(--surface-1)", border: "1px solid var(--border-strong)",
-                    borderRadius: 8, padding: "7px 9px", fontSize: 12,
-                    boxShadow: "var(--shadow)", whiteSpace: "nowrap", zIndex: 5,
-                  }}
-                >
-                  <strong>{b.month}</strong>
-                  <div>Weighted {fmt(b.weighted)}</div>
-                  <div>Unweighted {fmt(b.raw)}</div>
-                  <div className="muted">{b.dealCount} open</div>
-                </div>
-              )}
-              {/* 2px gap between the paired bars, per the mark spec. */}
-              <div style={{ display: "flex", gap: 2, alignItems: "flex-end", height: H - 22 }}>
-                <div style={{ flex: 1, height: Math.max(w, 2), background: "var(--series-1)", borderRadius: "4px 4px 0 0" }} />
-                <div style={{ flex: 1, height: Math.max(r, 2), background: "var(--series-2)", borderRadius: "4px 4px 0 0" }} />
-              </div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
+              {t === 0 ? "0" : tickLabel(t)}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ position: "relative", height: H }}>
+            {/* Gridlines are recessive: hairlines behind the marks, never
+                competing with them. The baseline is solid, the rest dashed. */}
+            {ticks.map((t) => (
+              <div
+                key={t}
+                aria-hidden="true"
+                style={{
+                  position: "absolute", left: 0, right: 0, bottom: (t / max) * H,
+                  borderTop: t === 0
+                    ? "1px solid var(--border-strong)"
+                    : "1px dashed var(--border)",
+                }}
+              />
+            ))}
+
+            <div
+              style={{
+                position: "absolute", inset: 0,
+                display: "flex", alignItems: "flex-end", gap: 18, padding: "0 4px",
+              }}
+            >
+              {buckets.map((b, i) => {
+                const w = (Number(b.weighted) / max) * H;
+                const r = (Number(b.raw) / max) * H;
+                return (
+                  <div
+                    key={b.month}
+                    onMouseEnter={() => setHover(i)}
+                    onMouseLeave={() => setHover(null)}
+                    style={{ flex: 1, position: "relative", height: "100%", display: "flex", alignItems: "flex-end" }}
+                  >
+                    {hover === i && (
+                      <div
+                        role="tooltip"
+                        style={{
+                          position: "absolute", bottom: "100%", left: "50%",
+                          transform: "translateX(-50%)", marginBottom: 6,
+                          background: "var(--surface-1)", border: "1px solid var(--border-strong)",
+                          borderRadius: 8, padding: "7px 9px", fontSize: 12,
+                          boxShadow: "var(--shadow)", whiteSpace: "nowrap", zIndex: 5,
+                        }}
+                      >
+                        <strong>{b.month}</strong>
+                        <div>Weighted {fmt(b.weighted)}</div>
+                        <div>Unweighted {fmt(b.raw)}</div>
+                        <div className="muted">{b.dealCount} open</div>
+                      </div>
+                    )}
+                    {/* 2px gap between the paired bars, per the mark spec. */}
+                    <div style={{ display: "flex", gap: 2, alignItems: "flex-end", width: "100%", height: "100%" }}>
+                      <div style={{ flex: 1, height: Math.max(w, 2), background: "var(--series-1)", borderRadius: "4px 4px 0 0" }} />
+                      <div style={{ flex: 1, height: Math.max(r, 2), background: "var(--series-2)", borderRadius: "4px 4px 0 0" }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 18, padding: "6px 4px 0" }}>
+            {buckets.map((b) => (
+              <div
+                key={b.month}
+                style={{ flex: 1, fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}
+              >
                 {b.month.slice(5)}/{b.month.slice(2, 4)}
               </div>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
+}
+
+/* Round the axis up to a maximum divisible into readable steps, so ticks read
+ * $200k / $400k rather than $198.75k. Two details matter:
+ *
+ * Picking the *step* first and multiplying back is what keeps every tick round --
+ * rounding the maximum first and dividing does not (2.5M / 4 = 625k).
+ *
+ * And the interval count is chosen, not fixed. A 1/2/2.5/5/10 ladder jumps hard
+ * from 5 to 10, so a $240k peak on four intervals rounds to a $400k axis and the
+ * tallest bar reaches 60% of the frame. Five intervals give $250k instead. Try
+ * both and keep the tighter axis, preferring fewer ticks on a tie.
+ */
+export function axisScale(peak: number) {
+  const candidates = [4, 5].map((intervals) => {
+    const raw = peak / intervals;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const n = raw / mag;
+    const step = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
+    return {
+      max: step * intervals,
+      step,
+      ticks: Array.from({ length: intervals + 1 }, (_, i) => i * step),
+    };
+  });
+  return candidates.reduce((best, c) => (c.max < best.max ? c : best));
+}
+
+/* Ticks need a rounding that never lies: fmt() rounds $2,500 to "$3k", which is
+ * fine on a bar's own label but wrong on a gridline the bars are measured
+ * against. Keep a decimal when the step is not a whole unit. */
+function tickLabel(n: number) {
+  if (Math.abs(n) < 1_000) return `$${Number.isInteger(n) ? n : n.toFixed(2)}`;
+  const [div, suffix] = Math.abs(n) >= 1_000_000 ? [1_000_000, "M"] : [1_000, "k"];
+  // Two decimals, then dropped if they are zeros: a $1.25M gridline must not
+  // print as "$1.3M" when it is the number the bars are measured against.
+  const scaled = Number((n / div).toFixed(2));
+  return `$${scaled}${suffix}`;
 }
 
 function fmt(v: string) {
