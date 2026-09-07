@@ -4,9 +4,30 @@
 &nbsp;233 tests — 142 Python, 91 Java — running on every push with **no API key, no
 network calls, and no repository secrets**.
 
+![Pipeline dashboard: KPI tiles, rep leaderboard, conversion funnel, stage velocity, and a weighted forecast chart with a labelled value axis](docs/screenshots/dashboard.png)
+
+**Run it:** clone, `docker compose up -d --build`, then `docker compose exec -T api
+python scripts/seed.py` and open **http://localhost:3000** — no API key needed, no
+account to create. See [Setup](#setup) below for the full walkthrough, including the
+non-Docker path. Nothing here is deployed anywhere; every port binds to localhost.
+
 Two services around one event stream. A **Python/FastAPI** sales CRM with three
 LangGraph agents, and a **Java/Spring Boot** analytics service with a deterministic
 rules engine — connected by a transactional outbox, not by an API call between them.
+
+```mermaid
+flowchart LR
+    U["Rep / Admin"] --> D["Next.js dashboard\n:3000"]
+    D --> API["FastAPI CRM\n:8000"]
+    D --> AN["Java analytics\n:8081"]
+    API -->|"same transaction"| OB[("outbox_events")]
+    OB -->|polls| AN
+    API -.->|"trace context"| T["Jaeger\n:16686"]
+    AN -.->|"resumed trace"| T
+
+    style OB fill:#fef3c7,stroke:#d97706
+    style T fill:#f3e8ff,stroke:#9333ea
+```
 
 The interesting part is the contrast: the agents react to events as they arrive, while
 the rules engine sweeps on a schedule, because a rule about the *absence* of activity
@@ -47,31 +68,34 @@ the event pipeline itself — lag, dead letters, and how far the consumer has go
 
 ## Architecture
 
-```
-                    ┌─ one transaction ──────────────┐
-POST /deals ──► deal_service ──► INSERT deal         │
-                    │            INSERT outbox_event │──► commit
-                    └────────────────────────────────┘        │
-                                                              ├──► outbox_events ──┐
-                                                              │    (durable log)    │
-                                                              │                     ▼
-                                                              │        Java analytics service
-                                                              │        polls ──► projections
-                                                              │                ──► rules sweep
-                                                              │
-                                            BackgroundTasks ──┴──► EventBus
-                                                                     │
-                                                             DealCreated
-                                                                     │
-                                                                     ▼
-                                                lead_scoring graph (LangGraph)
-                                      fetch_context → score_lead → [≥80?] → persist
+```mermaid
+flowchart TD
+    subgraph TX["one transaction"]
+        A["POST /deals"] --> B["deal_service"]
+        B --> C[("INSERT deal")]
+        B --> D[("INSERT outbox_event")]
+    end
+
+    D -->|commit| E[("outbox_events\n(durable log, append-only)")]
+    C -->|commit| E
+
+    E -->|polls| F["Java analytics service"]
+    F --> G["projections"]
+    F --> H["rules sweep"]
+
+    B -.->|BackgroundTasks, best-effort| I["EventBus"]
+    I -.-> J["DealCreated"]
+    J -.-> K["lead_scoring graph (LangGraph)\nfetch_context → score_lead → [≥80?] → persist"]
+
+    style TX fill:#eef2ff,stroke:#6366f1
+    style E fill:#fef3c7,stroke:#d97706
+    style K fill:#dcfce7,stroke:#16a34a
 ```
 
-The deal and its event commit **together** — neither can exist without the other. The
-in-process bus fires only *after* that commit, so agents never react to state that might
-roll back, and it runs through `BackgroundTasks` so a multi-second LLM call never delays
-the HTTP response.
+The deal and its event commit **together** — neither can exist without the other (solid
+arrows). The in-process bus fires only *after* that commit, so agents never react to
+state that might roll back — dashed arrows mark that best-effort path, which runs
+through `BackgroundTasks` so a multi-second LLM call never delays the HTTP response.
 
 ### Design decisions
 
