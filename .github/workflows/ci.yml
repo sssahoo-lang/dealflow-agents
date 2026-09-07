@@ -1,0 +1,110 @@
+# Both suites run with no API key, no network calls, and no repository secrets.
+# That is not an accident of CI configuration -- it is why LLM_PROVIDER defaults
+# to the deterministic stub (see app/agents/stub.py). A contributor forking this
+# repo gets a green build without being given anything.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: Python — CRM & agents
+    runs-on: ubuntu-latest
+
+    services:
+      # Published on 5433 to match the compose file and the defaults baked into
+      # app/config.py, so the same commands work locally and here.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: crm
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U crm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Migrate
+        run: alembic upgrade head
+
+      # After the migration, so the grant on public.outbox_events has a table to
+      # attach to. tests/test_db_grants.py skips itself when the role is absent;
+      # provisioning it here is what makes that suite actually run in CI.
+      - name: Provision the analytics role
+        env:
+          PGPASSWORD: crm
+        run: psql -h localhost -p 5433 -U crm -d crm -v ON_ERROR_STOP=1 -f db/init/01-analytics-role.sql
+
+      - run: pytest -q
+
+  java:
+    name: Java — analytics & rules
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: crm
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: crm
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U crm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: "21"
+          distribution: temurin
+          cache: maven
+
+      # The Java integration tests read a table Alembic owns, so the Python
+      # migration is a prerequisite of the Java build. That dependency is real,
+      # not incidental: public.outbox_events is the contract between them.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Migrate
+        run: alembic upgrade head
+
+      - name: Provision the analytics role
+        env:
+          PGPASSWORD: crm
+        run: psql -h localhost -p 5433 -U crm -d crm -v ON_ERROR_STOP=1 -f db/init/01-analytics-role.sql
+
+      # verify, not test: Surefire runs the unit tests, Failsafe runs the *IT
+      # integration tests, and only `verify` runs both.
+      - name: Maven verify
+        working-directory: analytics-service
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5433/crm
+          SPRING_DATASOURCE_USERNAME: analytics
+          SPRING_DATASOURCE_PASSWORD: analytics
+          JWT_SECRET: dev-only-insecure-secret-change-me-in-production-32b+
+          TZ: UTC
+        run: mvn -B verify

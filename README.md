@@ -1,5 +1,9 @@
 # DealFlow Agents
 
+[![CI](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml)
+&nbsp;207 tests — 130 Python, 77 Java — running on every push with **no API key, no
+network calls, and no repository secrets**.
+
 Two services around one event stream. A **Python/FastAPI** sales CRM with three
 LangGraph agents, and a **Java/Spring Boot** analytics service with a deterministic
 rules engine — connected by a transactional outbox, not by an API call between them.
@@ -332,6 +336,12 @@ docker compose --profile test run --rm analytics-test      # 77 Java (46 unit, 3
 Both suites run without an API key. The Java suite runs inside the build stage, where
 Maven and its dependency cache already live, against the real Postgres — so every
 statement is exercised against the actual Flyway-built schema.
+
+CI runs both on every push (`.github/workflows/ci.yml`) with no repository secrets,
+which is only possible because `LLM_PROVIDER` defaults to the deterministic stub. The
+Java job runs `alembic upgrade head` before `mvn verify`: the Java integration tests
+read a table Alembic owns, and that ordering is the contract between the two services
+made executable.
 
 ## Layout
 
