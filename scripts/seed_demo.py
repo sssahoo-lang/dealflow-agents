@@ -143,10 +143,14 @@ def seed_demo() -> None:
             db.flush()
 
             # Backdate creation so the funnel and velocity have real spans.
+            # Assign on the ORM object, not via raw UPDATE: a raw statement
+            # bypasses the identity map, so to_envelope would still read the
+            # original timestamp and the projection would think every deal was
+            # created today -- which shows up as a negative "days to close".
             opened_at = utc_days_ago(opened_days_ago)
-            db.execute(
-                text("UPDATE deals SET created_at = :t, stage_changed_at = :t WHERE id = :id"),
-                {"t": opened_at.replace(tzinfo=None), "id": deal.id})
+            deal.created_at = opened_at.replace(tzinfo=None)
+            deal.stage_changed_at = opened_at.replace(tzinfo=None)
+            db.flush()
             outbox.record(db, DealCreated(
                 deal_id=deal.id, company_id=deal.company_id, owner_id=deal.owner_id))
             # Flush now. ORM-added rows are written at commit, but the raw stage
@@ -169,7 +173,7 @@ def seed_demo() -> None:
                             VALUES ('deal', :id, 'deal.stage_changed', 1,
                                     CAST(:payload AS jsonb), :t)"""),
                     {"id": deal.id, "t": utc_days_ago(at),
-                     "payload": _stage_payload(deal, company, owner, previous, stage)})
+                     "payload": _stage_payload(deal, company, owner, previous, stage, opened_at)})
                 previous = stage
 
             if outcome in (DealStage.won, DealStage.lost):
@@ -181,7 +185,7 @@ def seed_demo() -> None:
                             VALUES ('deal', :id, 'deal.stage_changed', 1,
                                     CAST(:payload AS jsonb), :t)"""),
                     {"id": deal.id, "t": utc_days_ago(at),
-                     "payload": _stage_payload(deal, company, owner, previous, outcome)})
+                     "payload": _stage_payload(deal, company, owner, previous, outcome, opened_at)})
 
             deal.stage = outcome
             deal.score = round(random.uniform(15, 95), 1)
@@ -222,7 +226,7 @@ def seed_demo() -> None:
         db.close()
 
 
-def _stage_payload(deal, company, owner, from_stage, to_stage) -> str:
+def _stage_payload(deal, company, owner, from_stage, to_stage, created_at) -> str:
     import json
     return json.dumps({
         "deal_id": deal.id,
@@ -244,7 +248,9 @@ def _stage_payload(deal, company, owner, from_stage, to_stage) -> str:
         "owner_name": owner.full_name,
         "primary_contact_id": deal.primary_contact_id,
         "primary_contact_name": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        # The real created_at, not now(): these events carry higher ids than the
+        # created event, so a wrong value here wins the last_event_id guard.
+        "created_at": created_at.isoformat(),
         "stage_changed_at": datetime.now(timezone.utc).isoformat(),
         "from_stage": from_stage.value,
         "to_stage": to_stage.value,

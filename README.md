@@ -36,6 +36,11 @@ read model.
 | `GET/PATCH /rules`, `POST /rules/run`, `GET /rules/findings` | Deterministic rules engine |
 | `GET /admin/outbox/status` | Consumer lag, dead letters, pending count |
 
+**Dashboard** — a Next.js front end that reads both services directly, so the split is
+visible rather than hidden behind a gateway. Four views: pipeline analytics (served by
+Java), the agents in action (served by Python), the rules engine and its findings, and
+the event pipeline itself — lag, dead letters, and how far the consumer has got.
+
 ## Architecture
 
 ```
@@ -161,9 +166,15 @@ Swagger UI at http://localhost:8000/docs
 ### Or run the whole stack in Docker
 
 ```bash
-docker compose up -d --build     # db → migrate (one-shot) → api
+docker compose up -d --build     # db → migrate (one-shot) → api → analytics → dashboard
 docker compose exec -T api python scripts/seed.py
+docker compose exec -T api python scripts/seed_demo.py   # optional: 26 deals of history
 ```
+
+Then open **http://localhost:3000** and sign in with one of the demo accounts below;
+the login screen lists them with a one-click fill. The API is on :8000, the analytics
+service on :8080, Postgres on :5433. Every port binds to localhost — nothing is
+deployed anywhere.
 
 `migrate` runs `alembic upgrade head` and exits; `api` waits for it to *complete*
 (`service_completed_successfully`) rather than for another service to be healthy. The
@@ -344,6 +355,12 @@ analytics-service/           Java/Spring Boot, built by Maven inside Docker
   rules/       condition tree, pure evaluator, engine, hourly scheduler
   security/    JwtAuthFilter — verifies the CRM's tokens, never mints them
   db/migration/  Flyway: V1 read model, V2 rules
+
+frontend/                    Next.js 15 / React 19 dashboard, its own container
+  app/         page.tsx (tab shell, theme), globals.css (design tokens)
+  components/  Pipeline, Agents, Rules, EventPipeline, Login, Charts
+  lib/api.ts   two typed clients — the CRM and the analytics service are
+               separate origins, and the dashboard talks to both directly
 ```
 
 ## Known limitations

@@ -89,6 +89,29 @@ services:
       # Spring Boot needs longer than uvicorn to come up.
       start_period: 40s
 
+  dashboard:
+    build:
+      context: ./frontend
+      args:
+        # Next.js inlines NEXT_PUBLIC_* at build time, and these are called from
+        # the BROWSER -- so they must be host-reachable URLs, not compose service
+        # names. http://api:8000 would resolve inside the network but not in a tab.
+        NEXT_PUBLIC_CRM_URL: ${NEXT_PUBLIC_CRM_URL:-http://localhost:8000}
+        NEXT_PUBLIC_ANALYTICS_URL: ${NEXT_PUBLIC_ANALYTICS_URL:-http://localhost:8081}
+    environment:
+      TZ: UTC
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   # Runs the Java suite inside the build stage, where Maven and the dependency
   # cache already live. Not started by `docker compose up` -- invoke with:
   #   docker compose --profile test run --rm analytics-test
