@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jose import jwt  # noqa: E402
 
-from app.config import settings  # noqa: E402
+from app.config import settings
+from app.core.keys import signing_key  # noqa: E402
 from app.core.security import create_access_token, decode_access_token  # noqa: E402
 from app.models import Activity, OutboxEvent  # noqa: E402
 from app.models.enums import ActivityType  # noqa: E402
@@ -128,7 +129,7 @@ def test_agent_activities_are_excluded_from_the_backfill(db, crm_data, users):
 
 
 def decoded(token: str) -> dict:
-    return jwt.decode(token, settings.jwt_secret, [settings.jwt_algorithm])
+    return jwt.decode(token, signing_key().public_pem, [settings.jwt_algorithm])
 
 
 def test_login_token_carries_uid_and_role(client, users, token):

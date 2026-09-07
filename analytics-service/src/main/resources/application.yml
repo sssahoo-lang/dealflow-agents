@@ -49,8 +49,14 @@ analytics:
     enabled: ${ANALYTICS_RULES_ENABLED:true}
 
   jwt:
-    # Must match the Python API's JWT_SECRET.
-    secret: ${JWT_SECRET:dev-only-insecure-secret-change-me-in-production-32b+}
+    # The CRM's public keys. This service holds no signing material of its own --
+    # it can verify the CRM's tokens and cannot mint one.
+    jwks-uri: ${JWKS_URI:http://api:8000/.well-known/jwks.json}
+    # An unknown kid triggers a refetch, and the kid comes from the caller, so
+    # refetching is rate limited: without a floor a stream of junk tokens would
+    # make this service an amplifier pointed at the CRM.
+    refresh-cooldown: ${JWKS_REFRESH_COOLDOWN:30s}
+    timeout: ${JWKS_TIMEOUT:3s}
 
 logging:
   level:

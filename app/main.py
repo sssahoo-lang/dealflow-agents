@@ -41,6 +41,7 @@ async def not_found_handler(request: Request, exc: NotFound):
 
 
 app.include_router(auth.router)
+app.include_router(auth.jwks_router)
 app.include_router(crm.companies)
 app.include_router(crm.contacts)
 app.include_router(crm.deals)

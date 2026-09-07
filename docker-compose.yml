@@ -44,8 +44,11 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://crm:crm@db:5432/crm
-      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
-      JWT_ALGORITHM: HS256
+      # Empty generates an ephemeral RSA keypair at startup, which is why this
+      # runs with no setup. Tokens then do not survive a restart -- set a PEM for
+      # anything longer-lived. See app/core/keys.py.
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:-}
+      JWT_ALGORITHM: RS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       LLM_PROVIDER: ${LLM_PROVIDER:-stub}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -71,7 +74,9 @@ services:
       SPRING_DATASOURCE_USERNAME: analytics
       SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
       # Must match the API's secret: this service verifies the same HS256 token.
-      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
+      # No signing material here. This service fetches the CRM's PUBLIC keys and
+      # can verify tokens without being able to mint one.
+      JWKS_URI: ${JWKS_URI:-http://api:8000/.well-known/jwks.json}
       TZ: UTC
     ports:
       - "8081:8081"
@@ -126,7 +131,6 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/crm
       SPRING_DATASOURCE_USERNAME: analytics
       SPRING_DATASOURCE_PASSWORD: ${ANALYTICS_DB_PASSWORD:-analytics}
-      JWT_SECRET: ${JWT_SECRET:-dev-only-insecure-secret-change-me-in-production-32b+}
       TZ: UTC
     volumes:
       # Bind the live source so a test run picks up edits without an image

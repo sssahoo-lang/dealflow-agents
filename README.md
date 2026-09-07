@@ -1,7 +1,7 @@
 # DealFlow Agents
 
 [![CI](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml)
-&nbsp;207 tests — 130 Python, 77 Java — running on every push with **no API key, no
+&nbsp;222 tests — 137 Python, 85 Java — running on every push with **no API key, no
 network calls, and no repository secrets**.
 
 Two services around one event stream. A **Python/FastAPI** sales CRM with three
@@ -97,6 +97,26 @@ payload** so a consumer can render a rep leaderboard without access to the `user
 `companies` tables. `contracts/events/deal.created.v1.json` is asserted from **both** sides —
 `tests/test_outbox.py` in Python and `EventContractTest` in Java read the same file, so
 neither service can change the payload shape alone.
+
+**Asymmetric signing, so verifying a token does not imply being able to mint one.**
+The analytics service used to verify with the same HS256 secret the CRM signed with.
+That handed a read-only service the ability to forge an admin token for the CRM — which
+undoes, in the auth layer, exactly what its SELECT-only database role establishes in
+Postgres. It now signs RS256: the CRM holds the private key, publishes the public half
+at `/.well-known/jwks.json`, and the analytics service holds no signing material at all.
+The gap is closed by the cryptography rather than by a promise about the code.
+
+Three details are what make it work rather than merely look right:
+
+- The `kid` is an **RFC 7638 thumbprint** — derived from the key, not assigned. Two
+  implementations in two languages agree on a key's name without coordinating one, and
+  no two distinct keys can collide.
+- An unknown `kid` triggers **one refetch**, which is what makes rotation self-healing:
+  restart the API (which regenerates its ephemeral key) and the Java service recovers on
+  its own, with nothing restarted and no value copied between config files.
+- That refetch is **rate limited**, because the `kid` is chosen by whoever sent the
+  token. Without a floor, a stream of junk tokens turns every verification into an
+  outbound request and the analytics service becomes an amplifier pointed at the CRM.
 
 **The analytics service's access limits are enforced by Postgres, not convention.**
 The Java service connects as a dedicated `analytics` role that can `SELECT`
@@ -329,8 +349,8 @@ of retention.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                       # 130, no network, no API key
-docker compose --profile test run --rm analytics-test      # 77 Java (46 unit, 31 integration)
+.venv/bin/python -m pytest tests/ -q                       # 137, no network, no API key
+docker compose --profile test run --rm analytics-test      # 85 Java (54 unit, 31 integration)
 ```
 
 Both suites run without an API key. The Java suite runs inside the build stage, where
@@ -349,7 +369,8 @@ made executable.
 app/
   models/      SQLAlchemy ORM — User, Company, Contact, Deal, Activity, OutboxEvent
   schemas/     Pydantic request/response models
-  core/        security.py (JWT, bcrypt), rbac.py (role + stage rules)
+  core/        security.py (JWT, bcrypt), keys.py (RSA signing key + JWKS),
+               rbac.py (role + stage rules)
   api/         deps.py (auth dependencies), routes/
   services/    business logic; returns (entity, event) so routes control publishing
   events/      bus.py, schemas.py, handlers.py, outbox.py (event -> row)
@@ -363,7 +384,8 @@ analytics-service/           Java/Spring Boot, built by Maven inside Docker
   projection/  guarded upserts into the read model
   analytics/   the four read-time aggregates + controller
   rules/       condition tree, pure evaluator, engine, hourly scheduler
-  security/    JwtAuthFilter — verifies the CRM's tokens, never mints them
+  security/    JwtAuthFilter + JwksKeyProvider — verifies the CRM's tokens and,
+               holding no signing material, could not mint one
   db/migration/  Flyway: V1 read model, V2 rules
 
 frontend/                    Next.js 15 / React 19 dashboard, its own container
@@ -377,12 +399,11 @@ frontend/                    Next.js 15 / React 19 dashboard, its own container
 
 Named rather than hidden, because each is a deliberate trade:
 
-**The shared JWT secret is symmetric.** The analytics service verifies the CRM's tokens
-with the same HS256 key the CRM signs with, which means a compromise of the analytics
-service could forge an admin token for the CRM. The fix is RS256 plus a JWKS endpoint —
-roughly 40 lines on each side, deferred rather than overlooked. Note the two libraries
-disagree on key strength: `python-jose` will sign with a short secret, `jjwt` enforces
-RFC 7518's 256-bit floor, so both sides now validate the same minimum.
+**The signing key is ephemeral unless you supply one.** With `JWT_PRIVATE_KEY` unset the
+CRM generates an RSA keypair at startup, so tokens do not survive a restart and two API
+replicas would sign with different keys. That is the price of a repo that runs with no
+setup, and it is a better price than a private key committed to source control. A real
+deployment sets the variable.
 
 **Lead scoring is still best-effort.** The in-process bus can drop a publish if the
 process dies before the background task runs. The event is durably in the outbox either

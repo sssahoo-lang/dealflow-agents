@@ -38,20 +38,27 @@ def test_malformed_token_is_rejected(client):
     assert resp.status_code == 401
 
 
-def test_token_signed_with_the_wrong_secret_is_rejected(client, users):
+def test_token_signed_with_a_different_key_is_rejected(client, users):
+    """Under RS256 the only way to forge is to hold another private key -- and
+    holding one gets an attacker nothing, because the CRM verifies against its
+    own published key, not against whatever signed the token."""
     from datetime import datetime, timedelta, timezone
 
+    from cryptography.hazmat.primitives.asymmetric import rsa
     from jose import jwt
 
     from app.config import settings
+    from app.core.keys import SigningKey
 
+    attacker = SigningKey(rsa.generate_private_key(public_exponent=65537, key_size=2048))
     forged = jwt.encode(
         {
             "sub": "admin@test.com",
             "exp": datetime.now(timezone.utc) + timedelta(minutes=60),
         },
-        "not-the-real-secret",
+        attacker.private_pem,
         settings.jwt_algorithm,
+        headers={"kid": attacker.kid},
     )
 
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {forged}"})
@@ -65,13 +72,14 @@ def test_expired_token_is_rejected(client, users):
     from jose import jwt
 
     from app.config import settings
+    from app.core.keys import signing_key
 
     expired = jwt.encode(
         {
             "sub": "admin@test.com",
             "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
         },
-        settings.jwt_secret,
+        signing_key().private_pem,
         settings.jwt_algorithm,
     )
 

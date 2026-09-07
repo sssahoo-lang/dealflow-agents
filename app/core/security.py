@@ -4,6 +4,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.config import settings
+from app.core.keys import signing_key
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -34,12 +35,20 @@ def create_access_token(
         claims["uid"] = uid
     if role is not None:
         claims["role"] = role
-    return jwt.encode(claims, settings.jwt_secret, settings.jwt_algorithm)
+    key = signing_key()
+    # The `kid` header is what makes rotation work without coordination: a
+    # verifier that does not recognise it refetches the JWKS instead of failing.
+    return jwt.encode(
+        claims, key.private_pem, settings.jwt_algorithm, headers={"kid": key.kid}
+    )
 
 
 def decode_access_token(token: str) -> str | None:
     try:
-        payload = jwt.decode(token, settings.jwt_secret, [settings.jwt_algorithm])
+        # Verified with the *public* half, even here. Nothing in this codebase
+        # needs the private key to check a signature, which is exactly the
+        # property the analytics service now relies on.
+        payload = jwt.decode(token, signing_key().public_pem, [settings.jwt_algorithm])
     except JWTError:
         return None
     return payload.get("sub")

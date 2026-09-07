@@ -1,21 +1,18 @@
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# RFC 7518 s3.2: HMAC-SHA keys must be >= 256 bits. Enforced by jjwt on the
-# Java side; enforced here so both services agree.
-MIN_JWT_SECRET_BYTES = 32
-
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+psycopg://crm:crm@localhost:5433/crm"
-    # >= 32 bytes is not arbitrary: RFC 7518 requires >= 256 bits for HMAC-SHA,
-    # and the Java analytics service (jjwt) enforces it at startup. python-jose
-    # does not, so a short secret works here and hard-fails there -- validated
-    # below so the failure surfaces on this side too.
-    jwt_secret: str = "dev-only-insecure-secret-change-me-in-production-32b+"
-    jwt_algorithm: str = "HS256"
+
+    # Tokens are signed with RS256, so the CRM holds a private key and nothing
+    # else needs one. Verifiers fetch the public half from /.well-known/jwks.json.
+    # Empty means "generate an ephemeral keypair at startup" -- see app/core/keys.py
+    # for why that is the default rather than a checked-in development key.
+    jwt_private_key: str = ""
+    jwt_algorithm: str = "RS256"
     access_token_expire_minutes: int = 1440
 
     # The dashboard runs on its own origin. Comma-separated so compose can
@@ -36,16 +33,15 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
-    @field_validator("jwt_secret")
+    @field_validator("jwt_algorithm")
     @classmethod
-    def _secret_is_strong_enough(cls, value: str) -> str:
-        if len(value.encode()) < MIN_JWT_SECRET_BYTES:
+    def _algorithm_is_asymmetric(cls, value: str) -> str:
+        if not value.startswith("RS"):
             raise ValueError(
-                f"JWT_SECRET must be at least {MIN_JWT_SECRET_BYTES} bytes "
-                f"(got {len(value.encode())}). RFC 7518 requires >= 256 bits for "
-                "HMAC-SHA, and the Java analytics service refuses to start on a "
-                "shorter key -- so a short secret here would break that service "
-                "while appearing to work in Python."
+                f"JWT_ALGORITHM must be an RSA algorithm (got {value!r}). A "
+                "symmetric algorithm would hand every verifier the ability to "
+                "mint -- including the read-only analytics service, whose whole "
+                "design is that it cannot write anything the CRM trusts."
             )
         return value
 

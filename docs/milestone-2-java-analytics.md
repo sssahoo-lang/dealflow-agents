@@ -6,6 +6,12 @@
 > reconciles, and a forced full replay leaves the read model byte-identical. See "Build order" at the bottom for the
 > per-step state, and "What actually shipped" immediately below for the places
 > implementation diverged from or went beyond this plan.
+>
+> **Auth has since moved past what this document describes.** The plan below (and the
+> "Auth" note under API) reflects the shared-HS256-secret design as it shipped in
+> Milestone 2. That was replaced with RS256 + a JWKS endpoint — see the README's
+> "Design decisions" section for the current design and why. Left as written here for
+> the historical record of what Milestone 2 actually built.
 
 ## Context
 
