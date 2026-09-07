@@ -1,7 +1,9 @@
 # DealFlow Agents — Milestone 2: Java analytics service
 
-> **Status: steps 1–8 are done and shipped. Only step 9 remains (README, contract
-> tests asserted from both languages, retention note).** See "Build order" at the bottom for the
+> **Status: COMPLETE. All nine steps are done and shipped.** Verified from an empty
+> volume: `down -v` then `up --build` brings all three services healthy, seed and
+> backfill populate the outbox, Java consumes it, the rules engine fires and
+> reconciles, and a forced full replay leaves the read model byte-identical. See "Build order" at the bottom for the
 > per-step state, and "What actually shipped" immediately below for the places
 > implementation diverged from or went beyond this plan.
 
@@ -10,8 +12,8 @@
 Milestone 1 is **done, tested, and pushed** to github.com/sssahoo-lang/dealflow-agents (private):
 a FastAPI + SQLAlchemy + Postgres CRM with JWT/RBAC and three LangGraph/Claude agents
 (lead scoring, follow-up drafting, NL query). The Python suite has since grown from 38
-to **125 tests**, still with no network calls and no API key required. The Java service
-adds **69** (38 unit, 31 integration).
+to **130 tests**, still with no network calls and no API key required. The Java service
+adds **77** (46 unit, 31 integration).
 
 Milestone 2 adds a **Java/Spring Boot analytics service** — a second service in a second
 language, fed by a transactional outbox. Two reasons this earns its place rather than
@@ -389,7 +391,12 @@ toolchain, which is a fresh setup (no JDK or Maven on the host by design).
    findings on the next pass. Two bugs fixed -- `Map.of` rejecting the null that clears
    a validation error (NPE surfacing as "Invalid condition: null"), and the jsonb
    `detail` leaking the driver's PGobject wrapper into the API. Commit `6e9760b`.
-9. ⬜ **README, contract tests both sides, retention note** → clean `down -v && up` passes the full E2E script.
+9. ✅ **Contract tests both sides, retention, README.** `EventContractTest` reads the
+   same contract file the Python test does (bind-mounted, not copied) and asserts the
+   handler reads no field the contract does not promise — proven to bite by deleting a
+   key and watching two tests fail. `scripts/prune_outbox.py` implements retention with
+   the min-floor-across-consumers rule and refuses when no consumer is registered. Full
+   clean-slate E2E passed. Commit `89056d0`.
 
 </details>
 
@@ -412,7 +419,7 @@ curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN" >
 diff /tmp/before.json /tmp/after.json && echo "IDEMPOTENT"
 ```
 
-Plus: `pytest -q` → **125 passed** (no API key) and
+Plus: `pytest -q` → **130 passed** (no API key) and
 `docker compose --profile test run --rm analytics-test` for the Java suite.
 
 ---
