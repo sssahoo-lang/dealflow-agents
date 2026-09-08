@@ -386,6 +386,26 @@ consumer is registered (an empty offset table means the consumer never started, 
 its work is done), and anything pruned can no longer be replayed, which is the real cost
 of retention.
 
+### Consumer lag, quantified
+
+The Event pipeline dashboard tab and `/admin/outbox/status` show lag qualitatively --
+a number of seconds, right now. `scripts/bench_outbox_lag.py` turns "the consumer is
+behind" into a distribution: seed a 10,000-event burst, drain it, measure
+`processed_at - occurred_at` per event, then truncate the read model and time a full
+rebuild from the same burst.
+
+| Metric | Value |
+|---|---|
+| p50 consumer lag | 55.18s |
+| p99 consumer lag | 110.19s |
+| Full read-model rebuild (10,000 events) | 111.53s |
+
+Full numbers, methodology, and the "why p99 isn't close to p50" explanation in
+[docs/benchmarks.md](docs/benchmarks.md). Reproduce with
+`python scripts/bench_outbox_lag.py --count 10000 --force` against a disposable
+stack -- it's destructive (truncates the outbox and the read model), which is also
+why it isn't in CI.
+
 ## Tests
 
 ```bash
@@ -416,7 +436,7 @@ app/
   events/      bus.py, schemas.py, handlers.py, outbox.py (event -> row)
   agents/      llm.py (provider factory), stub.py, context.py, one package per agent
   observability/  tracing.py -- opt-in OTel setup, off unless OTEL_EXPORTER_OTLP_ENDPOINT is set
-scripts/       seed.py, backfill_outbox.py, prune_outbox.py
+scripts/       seed.py, backfill_outbox.py, prune_outbox.py, bench_outbox_lag.py
 contracts/     shared event fixtures, asserted from BOTH languages
 tests/         142 tests; agent tests patch get_chat_model, never the network
 
