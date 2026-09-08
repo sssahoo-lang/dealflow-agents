@@ -123,10 +123,17 @@ def analytics_target(crm: DbTarget, user: str, password: str) -> DbTarget:
 SYNTHETIC_ID_FLOOR = 900_000
 
 
-def reset(crm: psycopg.Connection, analytics: psycopg.Connection) -> None:
-    """Empties the outbox and the read model. Destructive by design -- see the
-    module docstring for why this script requires --force."""
-    crm.execute("TRUNCATE public.outbox_events RESTART IDENTITY CASCADE")
+def reset_read_model(analytics: psycopg.Connection) -> None:
+    """Empties the analytics side only -- projections, the processed_event
+    ledger, dead letters, and the floor optimisation -- leaving
+    public.outbox_events untouched.
+
+    This is the "replay" op on its own: with the outbox still holding the
+    burst from seed(), truncating just this side and letting the poller
+    catch up again is exactly the "drop and rebuild the read model by
+    replaying the outbox" operation the V1__baseline.sql comment describes,
+    now with a stopwatch on it.
+    """
     analytics.execute(
         "TRUNCATE analytics.deal_projection, analytics.deal_stage_transition, "
         "analytics.activity_fact, analytics.processed_event, "
@@ -136,6 +143,13 @@ def reset(crm: psycopg.Connection, analytics: psycopg.Connection) -> None:
         "UPDATE analytics.consumer_offset SET floor_event_id = 0, updated_at = now() "
         "WHERE consumer = 'analytics'"
     )
+
+
+def reset(crm: psycopg.Connection, analytics: psycopg.Connection) -> None:
+    """Empties the outbox AND the read model. Destructive by design -- see the
+    module docstring for why this script requires --force."""
+    crm.execute("TRUNCATE public.outbox_events RESTART IDENTITY CASCADE")
+    reset_read_model(analytics)
 
 
 def seed(crm: psycopg.Connection, count: int) -> float:
@@ -210,6 +224,58 @@ def seed(crm: psycopg.Connection, count: int) -> float:
     return rows[0][1].timestamp()
 
 
+@dataclass
+class Result:
+    count: int
+    p50_lag_s: float
+    p99_lag_s: float
+    max_lag_s: float
+    replay_s: float
+    poll_interval_ms: int
+    batch_size: int
+
+
+def render_report(r: Result) -> str:
+    """A markdown table plus enough context to reproduce or distrust it.
+
+    Numbers with no config attached are not reproducible -- p50/p99 lag on
+    this pipeline is a direct function of poll_interval_ms and batch_size, so
+    reporting them without those two values would let a reader misread a
+    config choice as an inherent property of the design.
+    """
+    events_per_poll = r.batch_size / (r.poll_interval_ms / 1000)
+    return f"""\
+## Outbox consumer lag
+
+Measured against a burst of {r.count:,} synthetic `deal.created` events, all
+sharing one `occurred_at`, against the consumer as configured
+(`poll-interval-ms={r.poll_interval_ms}`, `batch-size={r.batch_size}` --
+{events_per_poll:,.0f} events/s sustained throughput at that config).
+Reproduce with `python scripts/bench_outbox_lag.py --count {r.count} --force`
+against a disposable stack.
+
+| Metric | Value |
+|---|---|
+| Events | {r.count:,} |
+| p50 consumer lag | {r.p50_lag_s:.2f}s |
+| p99 consumer lag | {r.p99_lag_s:.2f}s |
+| Max consumer lag | {r.max_lag_s:.2f}s |
+| Full read-model rebuild ({r.count:,} events) | {r.replay_s:.2f}s |
+
+**Reading these numbers:** lag is dominated by queue position, not per-event
+cost -- an event seeded near the end of the burst waits through every poll
+tick ahead of it before its batch comes up, which is why p99 is a multiple of
+p50 rather than close to it. The fix for a lower p99 under sustained load is
+`ANALYTICS_OUTBOX_POLL_INTERVAL_MS` and `batch-size`, not code -- both are
+config, not constants (see application.yml).
+
+Rebuild time is bounded by the same two knobs from a cold start (queue depth
+0, so no polling latency to hide behind) -- it's a direct read on raw
+insert-and-project throughput, which is why it lands close to
+`count / events_per_poll` above.
+"""
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--count", type=int, default=10_000, help="events per burst")
@@ -242,7 +308,86 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path(__file__).resolve().parents[1] / "docs" / "benchmarks.md",
     )
+    p.add_argument(
+        "--poll-interval-ms",
+        type=int,
+        default=2000,
+        help="for the report only -- must match ANALYTICS_OUTBOX_POLL_INTERVAL_MS "
+        "on the running service, or the numbers won't mean what the report says",
+    )
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=200,
+        help="for the report only -- must match analytics.outbox.batch-size",
+    )
     return p.parse_args(argv)
+
+
+class BenchmarkFailed(RuntimeError):
+    """Raised when the pipeline being measured didn't behave -- a dead letter,
+    a timeout -- rather than letting a bad run produce numbers that look like
+    good ones."""
+
+
+def drain_and_measure(
+    analytics: psycopg.Connection, expected: int, poll_every: float, timeout: float
+) -> tuple[dict[int, float], float]:
+    """Waits for `expected` events to be processed, capturing each one's
+    (processed_at - occurred_at) lag the moment it first becomes visible.
+    Returns (event_id -> lag_seconds, elapsed_wall_clock_seconds).
+
+    Why not just `SELECT count(*) FROM processed_event` at the end, or one
+    join query once the count looks right: OffsetCompactionJob prunes 'done'
+    rows out of processed_event on its own 5-minute schedule (see
+    OutboxRepository.compactOffset), completely independent of this script.
+    The first version of this function did exactly that naive count-and-join,
+    and against a live stack with 10+ hours of uptime it stalled at 1201/2000
+    -- compaction fired mid-drain, pruned everything already marked done, and
+    a plain COUNT(*) never reached the target again because the rows it was
+    counting kept vanishing out from under it.
+
+    The fix is to never trust the ledger to still hold a row later: read it on
+    every tick and merge into a running dict, so a row's lag is captured
+    within one poll interval of the row existing -- microseconds to a second,
+    not the 5-minute window compaction actually runs on. Whether that same
+    row survives to the NEXT tick is irrelevant once it's already in the dict.
+    """
+    collected: dict[int, float] = {}
+    start = time.monotonic()
+    while True:
+        rows = analytics.execute(
+            """
+            SELECT pe.event_id, extract(epoch FROM (pe.processed_at - oe.occurred_at))
+            FROM analytics.processed_event pe
+            JOIN public.outbox_events oe ON oe.id = pe.event_id
+            WHERE pe.status = 'done'
+            """
+        ).fetchall()
+        for event_id, lag in rows:
+            collected[event_id] = float(lag)
+
+        if len(collected) >= expected:
+            return collected, time.monotonic() - start
+
+        (dead,) = analytics.execute(
+            "SELECT count(*) FROM analytics.processed_event WHERE status = 'dead'"
+        ).fetchone()
+        if dead:
+            raise BenchmarkFailed(
+                f"{dead} event(s) dead-lettered during the run "
+                f"({len(collected)}/{expected} captured) -- the pipeline is broken, "
+                "not just slow. Check `docker compose logs analytics` for the "
+                "underlying error."
+            )
+
+        if time.monotonic() - start > timeout:
+            raise BenchmarkFailed(
+                f"Timed out after {timeout}s waiting for {expected} events; only "
+                f"{len(collected)} captured. Is the analytics service running "
+                "(`docker compose ps`) and polling (`ANALYTICS_OUTBOX_ENABLED`)?"
+            )
+        time.sleep(poll_every)
 
 
 if __name__ == "__main__":
@@ -266,3 +411,40 @@ if __name__ == "__main__":
         print(f"Seeding {args.count} synthetic deal.created events in one burst...")
         burst_at = seed(crm_conn, args.count)
         print(f"Seeded. Burst occurred_at = {time.strftime('%H:%M:%S', time.localtime(burst_at))}")
+
+        print(f"Waiting for the consumer to drain all {args.count} events...")
+        collected, _ = drain_and_measure(
+            analytics_conn, args.count, args.poll_every, args.timeout
+        )
+        lag = list(collected.values())
+        p50, p99 = percentile(lag, 50), percentile(lag, 99)
+        print(
+            f"Consumer lag over {len(lag)} events: "
+            f"p50={p50:.2f}s  p99={p99:.2f}s  max={max(lag):.2f}s"
+        )
+
+        print("Truncating the read model for a full-rebuild replay (outbox left intact)...")
+        reset_read_model(analytics_conn)
+        _, replay_s = drain_and_measure(
+            analytics_conn, args.count, args.poll_every, args.timeout
+        )
+        print(f"Full rebuild of {args.count} events took {replay_s:.2f}s")
+
+        result = Result(
+            count=args.count,
+            p50_lag_s=p50,
+            p99_lag_s=p99,
+            max_lag_s=max(lag),
+            replay_s=replay_s,
+            poll_interval_ms=args.poll_interval_ms,
+            batch_size=args.batch_size,
+        )
+        report = render_report(result)
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(report)
+        print(f"\nWrote {args.report}\n")
+        print(report)
+
+        print("Cleaning up: truncating the outbox and read model back to empty...")
+        reset(crm_conn, analytics_conn)
+        print("Done. Re-run scripts/seed.py / seed_demo.py if you want demo data back.")
