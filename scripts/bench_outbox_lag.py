@@ -42,6 +42,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -115,6 +116,100 @@ def analytics_target(crm: DbTarget, user: str, password: str) -> DbTarget:
     )
 
 
+# aggregate_id offset for synthetic rows, matching the convention
+# OutboxConsumerIT already uses for its own throwaway fixtures -- so a stray
+# benchmark row and a stray test row are recognizable by the same rule, and
+# neither can collide with a real seeded deal (which stay well under this).
+SYNTHETIC_ID_FLOOR = 900_000
+
+
+def reset(crm: psycopg.Connection, analytics: psycopg.Connection) -> None:
+    """Empties the outbox and the read model. Destructive by design -- see the
+    module docstring for why this script requires --force."""
+    crm.execute("TRUNCATE public.outbox_events RESTART IDENTITY CASCADE")
+    analytics.execute(
+        "TRUNCATE analytics.deal_projection, analytics.deal_stage_transition, "
+        "analytics.activity_fact, analytics.processed_event, "
+        "analytics.failed_event"
+    )
+    analytics.execute(
+        "UPDATE analytics.consumer_offset SET floor_event_id = 0, updated_at = now() "
+        "WHERE consumer = 'analytics'"
+    )
+
+
+def seed(crm: psycopg.Connection, count: int) -> float:
+    """Inserts `count` synthetic deal.created rows in one INSERT, all sharing
+    the same occurred_at -- a burst, the way a real spike in traffic would
+    actually arrive, not a slow trickle that would flatter the lag numbers.
+
+    Set-based (generate_series + jsonb_build_object), not `count` round trips
+    from Python: 10,000 individual INSERTs would spend most of the benchmark's
+    wall-clock time on network latency to Postgres, which is not what a
+    consumer-lag number is supposed to measure.
+
+    created_at/stage_changed_at are computed in Python and passed in as a
+    literal string, not built with Postgres's now()::text: that produces
+    "2026-09-08 04:31:53.423203+00" -- no "T", a 2-digit UTC offset -- which
+    is valid Postgres output but not what Instant.parse on the Java side
+    accepts. app.events.outbox._utc() calls dt.isoformat(), which is the
+    format real payloads carry; matching it here means a payload shape bug in
+    this script fails LOUDLY (a dead-lettered synthetic event) rather than
+    quietly measuring a pipeline that isn't the real one.
+
+    Relies on RESTART IDENTITY from `reset()` having just run, so the inserted
+    rows are exactly ids [1, count] -- verified by the row count returned,
+    not assumed silently.
+    """
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = crm.execute(
+        """
+        INSERT INTO public.outbox_events
+            (aggregate_type, aggregate_id, event_type, event_version, payload, occurred_at)
+        SELECT
+            'deal',
+            %(floor)s + gs,
+            'deal.created',
+            1,
+            jsonb_build_object(
+                'deal_id', %(floor)s + gs,
+                'name', 'Bench deal ' || gs,
+                'stage', 'new',
+                'value', '1000.00',
+                'priority', NULL,
+                'score', NULL,
+                'expected_close_date', NULL,
+                'company_id', 1,
+                'company_name', 'Bench Co',
+                'company_industry', NULL,
+                'owner_id', 1,
+                'owner_email', 'bench@demo.com',
+                'owner_name', 'Bench Owner',
+                'primary_contact_id', NULL,
+                'primary_contact_name', NULL,
+                'created_at', %(now_iso)s::text,
+                'stage_changed_at', %(now_iso)s::text
+            ),
+            now()
+        FROM generate_series(1, %(count)s) AS gs
+        RETURNING id, occurred_at
+        """,
+        {"floor": SYNTHETIC_ID_FLOOR, "count": count, "now_iso": now_iso},
+    )
+    rows = result.fetchall()
+    if len(rows) != count:
+        raise RuntimeError(f"expected to insert {count} rows, inserted {len(rows)}")
+    ids = [r[0] for r in rows]
+    if sorted(ids) != list(range(1, count + 1)):
+        raise RuntimeError(
+            "inserted ids were not a clean [1, count] range -- was reset() run "
+            "first, and is anything else writing to outbox_events concurrently?"
+        )
+    # All rows share one occurred_at (same INSERT, same transaction), so any
+    # row's value is the burst's start time.
+    return rows[0][1].timestamp()
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--count", type=int, default=10_000, help="events per burst")
@@ -160,4 +255,14 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         raise SystemExit(1)
-    print(f"(scaffold) would benchmark {args.count} events; phases not yet implemented")
+
+    crm = crm_target()
+    analytics = analytics_target(crm, args.analytics_user, args.analytics_password)
+
+    with crm.connect() as crm_conn, analytics.connect() as analytics_conn:
+        print(f"Resetting the outbox and read model at {crm.host}:{crm.port}/{crm.dbname}...")
+        reset(crm_conn, analytics_conn)
+
+        print(f"Seeding {args.count} synthetic deal.created events in one burst...")
+        burst_at = seed(crm_conn, args.count)
+        print(f"Seeded. Burst occurred_at = {time.strftime('%H:%M:%S', time.localtime(burst_at))}")
