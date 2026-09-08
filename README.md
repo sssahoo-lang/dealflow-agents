@@ -1,344 +1,242 @@
 # DealFlow Agents
 
 [![CI](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml)
-&nbsp;233 tests — 142 Python, 91 Java — running on every push with **no API key, no
-network calls, and no repository secrets**.
+&nbsp;233 automated tests run on every change — no API key or account needed to run them.
 
-![Pipeline dashboard: KPI tiles, rep leaderboard, conversion funnel, stage velocity, and a weighted forecast chart with a labelled value axis](docs/screenshots/dashboard.png)
+![Pipeline dashboard: KPI tiles, rep leaderboard, conversion funnel, stage velocity, and a weighted forecast chart](docs/screenshots/dashboard.png)
 
-![Jaeger trace waterfall for one deal: the dealflow-crm POST /deals span in teal, then a gap, then the dealflow-analytics outbox.dispatch span in amber resuming the SAME trace ID with the projection and ledger inserts nested underneath it](docs/screenshots/trace.png)
-*One trace, two services, one trace ID (`cc6f438`) — the claim in "Design decisions" below, not just the prose.*
+**Try it in one command:**
 
-**Run it:** clone, `docker compose up -d --build`, then `docker compose exec -T api
-python scripts/seed.py` and open **http://localhost:3000** — no API key needed, no
-account to create. See [Setup](#setup) below for the full walkthrough, including the
-non-Docker path. Nothing here is deployed anywhere; every port binds to localhost.
+```bash
+git clone https://github.com/sssahoo-lang/dealflow-agents.git
+cd dealflow-agents
+docker compose up -d --build
+docker compose exec -T api python scripts/seed.py
+```
 
-Two services around one event stream. A **Python/FastAPI** sales CRM with three
-LangGraph agents, and a **Java/Spring Boot** analytics service with a deterministic
-rules engine — connected by a transactional outbox, not by an API call between them.
+Then open **http://localhost:3000**. No API key, no account to create — the
+login screen has demo accounts you can sign in with in one click. See
+[Setup](#setup) below for more detail, including a non-Docker path. Nothing
+here is deployed anywhere; everything runs on your own machine.
+
+## What is this?
+
+DealFlow Agents is a small sales CRM (a tool for tracking companies,
+contacts, and deals moving through a sales pipeline) with a few AI
+assistants built in — one that scores new leads, one that drafts follow-up
+emails, and one you can ask plain-English questions like "which of my deals
+are worth the most?"
+
+Alongside it is a **second, separate service**, written in a different
+programming language, that only does reporting and analytics — a leaderboard,
+a conversion funnel, a forecast, and a rules engine that flags deals going
+cold.
+
+The interesting part isn't really the CRM or the AI features — it's how those
+two services talk to each other. They don't call each other's APIs directly.
+Instead, the CRM writes down everything that happens (a company added, a
+deal moved to a new stage) as a durable, ordered log, and the analytics
+service reads that log on its own schedule and builds its own copy of the
+data from it. This pattern — called a **transactional outbox** — is a common
+one in real production systems, and getting it right (so that nothing is ever
+lost, double-counted, or read out of order) is most of what this project is
+actually about.
 
 ```mermaid
 flowchart LR
-    U["Rep / Admin"] --> D["Next.js dashboard<br/>:3000"]
-    D --> API["FastAPI CRM<br/>:8000"]
-    D --> AN["Java analytics<br/>:8081"]
-    API -->|"same transaction"| OB[("outbox_events")]
-    OB -->|polls| AN
-    API -.->|"trace context"| T["Jaeger<br/>:16686"]
-    AN -.->|"resumed trace"| T
+    U["You"] --> D["Dashboard<br/>:3000"]
+    D --> API["CRM (Python)<br/>:8000"]
+    D --> AN["Analytics (Java)<br/>:8081"]
+    API -->|"writes to"| OB[("shared log")]
+    OB -->|"read by"| AN
 
     style OB fill:#fef3c7,stroke:#d97706
-    style T fill:#f3e8ff,stroke:#9333ea
 ```
-
-The interesting part is the contrast: the agents react to events as they arrive, while
-the rules engine sweeps on a schedule, because a rule about the *absence* of activity
-has no event to trigger it.
 
 ## What it does
 
-**CRM core** — companies, contacts, deals, and activities, with JWT auth and two roles.
-Reps see and act on only their own records; admins see everything. Pipeline transitions
-are stage-aware: a rep can advance a deal freely, but only an admin can close it as
-`won` or `lost`.
+**A basic CRM** — companies, contacts, deals, and a sales pipeline, with
+logins and two roles: a rep only sees their own deals, an admin sees
+everyone's. Anyone can move a deal forward, but only an admin can mark one
+won or lost.
 
-**Agent layer** — three agents, each a different agentic pattern:
+**Three AI assistants**, each built a different way:
 
-| Agent | Trigger | Pattern |
+| Assistant | What triggers it | How it works |
 |---|---|---|
-| **Lead scoring** | Event (`DealCreated`) | Linear graph with a conditional branch |
-| **Follow-up drafting** | `POST /agents/follow-up` | Linear graph, human-in-the-loop output |
-| **NL query** | `POST /agents/query` | Tool-calling loop over read-only tools |
+| **Lead scoring** | Automatically, when a deal is created | A small decision graph that scores the deal and decides whether to flag it |
+| **Follow-up drafting** | You click a button | Writes a draft follow-up email — it never gets sent automatically |
+| **Ask a question** | You type a question | Looks up an answer using a fixed set of safe, read-only lookups — it never writes its own database queries |
 
-**Analytics service (Java)** — a second service in a second language, fed by the outbox.
-It cannot call the CRM and cannot read its tables; it consumes events and builds its own
-read model.
+**A separate reporting service, written in Java**, that:
+- Shows a leaderboard of who's winning the most business
+- Shows a funnel of how many deals make it from "new" to "won"
+- Predicts future revenue, weighted by how likely each deal is to close
+- Runs a rules engine that flags deals that have gone quiet
 
-| Surface | What it does |
-|---|---|
-| `GET /analytics/leaderboard` | Wins, losses, open value and win rate per rep |
-| `GET /analytics/conversion` | Stage-by-stage funnel |
-| `GET /analytics/velocity` | Days spent per stage (avg and median) |
-| `GET /analytics/forecast` | Pipeline weighted by stage probability |
-| `GET/PATCH /rules`, `POST /rules/run`, `GET /rules/findings` | Deterministic rules engine |
-| `GET /admin/outbox/status` | Consumer lag, dead letters, pending count |
+This service never talks to the CRM directly — it only ever reads the shared
+log the CRM writes to, and it can't see or touch the CRM's own database
+tables at all (enforced by the database itself, not just by convention — more
+on that below).
 
-**Dashboard** — a Next.js front end that reads both services directly, so the split is
-visible rather than hidden behind a gateway. Four views: pipeline analytics (served by
-Java), the agents in action (served by Python), the rules engine and its findings, and
-the event pipeline itself — lag, dead letters, and how far the consumer has got.
+**A dashboard** that shows both halves of the system side by side, including
+a page that shows the shared log itself: how far behind the analytics service
+is, and whether anything has failed to process.
 
-## Architecture
+## How it's built
 
 ```mermaid
 flowchart TD
-    subgraph TX["one transaction"]
-        A["POST /deals"] --> B["deal_service"]
-        B --> C[("INSERT deal")]
-        B --> D[("INSERT outbox_event")]
+    subgraph TX["one save, one transaction"]
+        A["Create a deal"] --> B["Save the deal"]
+        A --> C["Write to the shared log"]
     end
 
-    D -->|commit| E[("outbox_events<br/>(durable log, append-only)")]
+    B -->|commit| E[("shared log<br/>(append-only)")]
     C -->|commit| E
 
-    E -->|polls| F["Java analytics service"]
-    F --> G["projections"]
-    F --> H["rules sweep"]
-
-    B -.->|BackgroundTasks, best-effort| I["EventBus"]
-    I -.-> J["DealCreated"]
-    J -.-> K["lead_scoring graph (LangGraph)<br/>fetch_context → score_lead → [≥80?] → persist"]
+    E -->|"read every ~2s"| F["Java analytics service"]
+    F --> G["updates its own reports"]
+    F --> H["checks the rules"]
 
     style TX fill:#eef2ff,stroke:#6366f1
     style E fill:#fef3c7,stroke:#d97706
-    style K fill:#dcfce7,stroke:#16a34a
 ```
 
-The deal and its event commit **together** — neither can exist without the other (solid
-arrows). The in-process bus fires only *after* that commit, so agents never react to
-state that might roll back — dashed arrows mark that best-effort path, which runs
-through `BackgroundTasks` so a multi-second LLM call never delays the HTTP response.
+Two things worth knowing:
 
-### Design decisions
+- **Saving a deal and logging the event happen together, or not at all.**
+  They're written in the same database transaction, so there's no way for
+  one to happen without the other.
+- **The Java service is never told about anything directly.** It just reads
+  the log on a timer and catches up. If it's offline for an hour, it hasn't
+  missed anything — it picks up exactly where it left off once it's back.
 
-**Transactional outbox for durability; in-process bus for immediacy.** Every domain
-change writes an `outbox_events` row *in the same transaction* as the change itself, so
-the event and the change land together or not at all — `tests/test_outbox.py` proves
-both directions. The in-process bus is layered on top as a best-effort, low-latency
-notification for the lead-scoring agent: if the process dies before the background task
-runs, that publish is lost, but the event is still durably on disk for a consumer to
-replay. Scoping matters here — **analytics is exactly-once-effect; lead scoring is
-best-effort.**
+The CRM is **Python (FastAPI)**. The analytics service is **Java (Spring
+Boot)**. The dashboard is **Next.js**. They're deliberately different
+languages and different services, on purpose — a big part of what this
+project demonstrates is a real boundary between two systems, not one
+monolith with different folders.
 
-The outbox table is deliberately append-only, with no `status`/`processed_at` column.
-Consumer progress belongs to the consumer, tracked in its own schema — which is what
-lets the Java service be granted `SELECT` and nothing else on this table. A
-status column would force write access and turn a published contract back into a shared
-mutable table.
+For the reasoning behind specific choices — why the shared log has no
+"status" column, why tokens are signed the way they are, why there are no
+running counters in the analytics database — see
+**[docs/design-decisions.md](docs/design-decisions.md)**.
 
-Two payload rules, both easy to get wrong and expensive to undo: **money crosses the
-wire as a string** (`"75000.10"`), never a JSON number, because a float round-trip
-silently loses precision; and `owner_email` / `company_name` are **denormalised into the
-payload** so a consumer can render a rep leaderboard without access to the `users` or
-`companies` tables. `contracts/events/deal.created.v1.json` is asserted from **both** sides —
-`tests/test_outbox.py` in Python and `EventContractTest` in Java read the same file, so
-neither service can change the payload shape alone.
+### Following one deal all the way through
 
-**Asymmetric signing, so verifying a token does not imply being able to mint one.**
-The analytics service used to verify with the same HS256 secret the CRM signed with.
-That handed a read-only service the ability to forge an admin token for the CRM — which
-undoes, in the auth layer, exactly what its SELECT-only database role establishes in
-Postgres. It now signs RS256: the CRM holds the private key, publishes the public half
-at `/.well-known/jwks.json`, and the analytics service holds no signing material at all.
-The gap is closed by the cryptography rather than by a promise about the code.
+Because the CRM and the analytics service don't call each other directly,
+most tracing tools can't automatically follow a single request across both
+of them. This project wires that up by hand: creating a deal produces one
+continuous trace that starts in the CRM and picks back up in the Java service
+a couple of seconds later, once it's read the log.
 
-Three details are what make it work rather than merely look right:
-
-- The `kid` is an **RFC 7638 thumbprint** — derived from the key, not assigned. Two
-  implementations in two languages agree on a key's name without coordinating one, and
-  no two distinct keys can collide.
-- An unknown `kid` triggers **one refetch**, which is what makes rotation self-healing:
-  restart the API (which regenerates its ephemeral key) and the Java service recovers on
-  its own, with nothing restarted and no value copied between config files.
-- That refetch is **rate limited**, because the `kid` is chosen by whoever sent the
-  token. Without a floor, a stream of junk tokens turns every verification into an
-  outbound request and the analytics service becomes an amplifier pointed at the CRM.
-
-**The analytics service's access limits are enforced by Postgres, not convention.**
-The Java service connects as a dedicated `analytics` role that can `SELECT`
-exactly one table — `public.outbox_events`, the published contract — and owns its own
-`analytics` schema. It cannot read `deals`, `users`, `contacts`, `companies` or
-`activities`, and cannot write to the outbox, even if its code tried to.
-`tests/test_db_grants.py` asserts all of that, so the invariant can't quietly rot:
-
-```sql
-has_table_privilege('analytics','public.deals','SELECT')          -- false
-has_table_privilege('analytics','public.outbox_events','SELECT')  -- true
-has_table_privilege('analytics','public.outbox_events','UPDATE')  -- false
-```
-
-Sharing one Postgres instance between two services *is* the shared-database
-anti-pattern in the strict sense. What makes it defensible here is that the shared
-surface is a single append-only, versioned contract table rather than the CRM's
-internals — and that the boundary is enforced by grants rather than good intentions.
-The residual coupling is real and worth naming: Python can still break Java by changing
-the payload shape, which is what `event_version` and the shared contract fixtures exist
-to catch.
-
-**RBAC lives inside the agent's tools, not just the API layer.** The NL query agent
-never sees or writes SQL. Each tool is a fixed SQLAlchemy `select()` with an allowlisted
-set of filterable columns, a hard 50-row limit, and an ownership filter applied
-server-side from the authenticated user. A confused or adversarially-prompted model
-cannot widen its own access — `tests/test_agents/test_nl_query_tools.py` asserts this
-directly.
-
-**One LLM construction point.** Every model call goes through
-`app/agents/llm.py::get_chat_model()`. Tests patch that one function, so the default
-suite makes zero network calls and needs no API key — and swapping providers is a
-config change, not a code change.
-
-**Sync SQLAlchemy.** No concurrency requirement justifies async here, and it keeps
-LangGraph nodes as plain functions.
-
-**The consumer tracks a ledger, not a high-water mark.** `BIGSERIAL` ids are assigned at
-`INSERT` but only become visible at `COMMIT`, so transaction A can take id 100 while B
-takes 101 and commits first. A consumer storing `last_seen = 101` would *never* see event
-100 — silently, showing up later as a leaderboard that is quietly a fraction of a percent
-wrong. Progress is instead an anti-join against a table of processed ids: an event is
-unprocessed iff it has no ledger row, which is correct regardless of commit order.
-
-**No counters anywhere in the read model.** Facts are immutable rows carrying the id of
-the event that produced them, and every aggregate is computed by SQL at read time. That
-is what makes redelivery provably harmless — there is nothing to double count — and it
-means the entire read model can be dropped and rebuilt by replaying the log.
-
-**Rules are data, not code.** A rule is a JSON condition tree evaluated by a pure
-function, so it can be retuned or disabled through the API with no redeploy. Two
-semantics worth stating: it **fails closed** (an unknown field disables the rule with the
-reason recorded, rather than firing on everything), and a comparison against a null fact
-is **false for every operator except `is_null`** — including `!=`, which reads as though
-absence should match. The `Clock` is injected, so the 14-day staleness boundary is tested
-at exactly 14 days rather than approximately.
-
-**A trace follows one deal across the language boundary, not just across a request.**
-`docker compose up` runs a bundled Jaeger; create a deal and its whole life is one trace
-at http://localhost:16686 — the FastAPI request that returns in milliseconds, then (a
-poll interval later, in a different process, in a different language) the Java span that
-consumes the outbox row and writes the projection. There is no synchronous call between
-those two halves for a tracing library to auto-propagate across, so the propagation here
-is explicit: `app/observability/tracing.py` injects the current span's W3C `traceparent`
-into a `trace_context` column on the outbox row *at the moment the fact becomes durable*;
-`OutboxTracing.java` reads it back later and resumes that trace instead of starting a new
-one linked only by coincidence. Same trade as everywhere else in this repo — opt-in,
-off by default, so `pytest` and `mvn verify` stay exactly as network-free as they were
-before this existed; only `docker compose up` turns it on.
+![Jaeger trace waterfall for one deal: the CRM's request in teal, then a gap, then the Java service picking up the same trace in amber](docs/screenshots/trace.png)
+*One deal, one trace, two services — visible at http://localhost:16686 once you run `docker compose up`.*
 
 ## Setup
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env          # runs as-is; no API key required
+cp .env.example .env          # works as-is, no API key needed
 docker compose up -d db
 .venv/bin/alembic upgrade head
 .venv/bin/python scripts/seed.py
 .venv/bin/uvicorn app.main:app --reload
 ```
 
-Swagger UI at http://localhost:8000/docs
+The API's interactive docs are at http://localhost:8000/docs
 
-### Or run the whole stack in Docker
+### Or run everything in Docker
 
 ```bash
-docker compose up -d --build     # db → migrate (one-shot) → api → analytics → dashboard
+docker compose up -d --build     # database → migrations → CRM → analytics → dashboard
 docker compose exec -T api python scripts/seed.py
-docker compose exec -T api python scripts/seed_demo.py   # optional: 26 deals of history
+docker compose exec -T api python scripts/seed_demo.py   # optional: adds ~6 months of sample history
 ```
 
-Then open **http://localhost:3000** and sign in with one of the demo accounts below;
-the login screen lists them with a one-click fill. The API is on :8000, the analytics
-service on :8081, Jaeger's trace UI on **:16686**, Postgres on :5433. Every port binds
-to localhost — nothing is deployed anywhere.
+Open **http://localhost:3000** and sign in with one of the demo accounts
+(the login screen lists them, with a one-click fill). The CRM API is on
+:8000, the analytics API on :8081, the trace viewer on :16686, and the
+database on :5433. Everything runs on your own machine — nothing is
+published anywhere.
 
-`migrate` runs `alembic upgrade head` and exits; `api` waits for it to *complete*
-(`service_completed_successfully`) rather than for another service to be healthy. The
-host workflow above still works unchanged — `db` publishes 5433 either way, so `.venv`,
-`alembic`, `pytest` and `seed.py` are unaffected. This adds a second way in, it doesn't
-replace the first.
+Demo logins (password is `demo1234` for all of them):
+`admin@demo.com` (sees everything), `rep@demo.com` and `rep2@demo.com`
+(each sees only their own deals).
 
-**Gotcha on an existing volume:** `db/init/` scripts run only when Postgres initialises
-an *empty* data directory. If you already have a `pgdata` volume, the analytics role
-won't be created automatically — apply it once by hand (the script is rerunnable):
+**If things don't come up cleanly on a machine that already had this running
+before:** the database setup script only runs automatically on a brand-new,
+empty database volume. If you've run this before and it's not working, run:
 
 ```bash
 docker compose exec -T db psql -U crm -d crm < db/init/01-analytics-role.sql
 ```
 
-Seeded logins (all password `demo1234`): `admin@demo.com` (admin),
-`rep@demo.com` (owns deals 1–2), `rep2@demo.com` (owns deal 3).
+### About the AI features
 
-### LLM provider
+By default, the AI assistants don't call a real language model — they run on
+a small set of deterministic, rule-based stand-ins (see `app/agents/stub.py`)
+so the whole project runs immediately with no API key, no cost, and no
+network calls. Everything *around* the AI still runs for real: the database
+writes, the permission checks, the decision graphs. What's simulated is just
+the actual language generation — the lead-scoring logic is a real weighted
+formula, but the follow-up email's wording is templated rather than written
+by a model.
 
-`LLM_PROVIDER` selects what backs the agents:
+To use a real model instead, set `LLM_PROVIDER=anthropic` and add an
+`ANTHROPIC_API_KEY` in your `.env` file.
 
-| Value | Behavior |
-|---|---|
-| `stub` (default) | Deterministic, no API key, no network. Every endpoint, graph, tool call, and DB write runs for real. |
-| `anthropic` | Real Claude calls. Requires `ANTHROPIC_API_KEY`. |
+## Try it yourself
 
-The stub is **not a language model and doesn't imitate one** — it's rule-based
-(`app/agents/stub.py`). Lead scores come from a weighted heuristic over deal value,
-contact seniority, activity count, and stage; the query agent routes to a tool by
-keyword. What it exercises is the *system*: the event bus fires, the LangGraph state
-machines execute their real conditional edges, the RBAC-scoped tools run real queries,
-and the results are written to Postgres. What it can't demonstrate is judgment — the
-rows the query agent returns are live, but the sentences around them are templated.
-Set `LLM_PROVIDER=anthropic` for that.
-
-This exists so the repo is runnable by anyone who clones it, and so CI needs no secret.
-
-## Verifying it works
+A quick tour, using `curl` against a running instance:
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
   -d '{"email":"rep@demo.com","password":"demo1234"}' | jq -r .access_token)
 
-# RBAC: rep sees 2 deals, cannot close one
+# Permissions: a rep can see their deals, but not close one
 curl -s localhost:8000/deals -H "Authorization: Bearer $TOKEN"
 curl -s -X PATCH localhost:8000/deals/1 -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"stage":"won"}'      # 403
+  -H 'Content-Type: application/json' -d '{"stage":"won"}'      # rejected (403)
 
-# Agent 1: create a deal, wait, see score + reasoning appear
+# Create a deal and watch the lead-scoring assistant pick it up
 curl -s -X POST localhost:8000/deals -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"New opportunity","company_id":1,"value":75000}'
 sleep 5
-curl -s localhost:8000/deals/4 -H "Authorization: Bearer $TOKEN"        # score, priority
-curl -s "localhost:8000/activities?deal_id=4" -H "Authorization: Bearer $TOKEN"
+curl -s localhost:8000/deals/4 -H "Authorization: Bearer $TOKEN"   # now has a score
 
-# Agent 2: draft a follow-up (saved as a draft, never sent)
-curl -s -X POST localhost:8000/agents/follow-up -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' -d '{"deal_id":1}'
-
-# Agent 3: ask a question in natural language
+# Ask a plain-English question
 curl -s -X POST localhost:8000/agents/query -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"question":"Which of my deals are worth the most?"}'
 ```
 
-The outbox, verified against the database rather than through the API:
+**Watching the shared log directly.** A stage change gets logged; a plain
+rename doesn't:
 
 ```bash
-# A stage change writes an event; a rename does not.
 curl -s -X PATCH localhost:8000/deals/1 -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"stage":"negotiation"}'
 curl -s -X PATCH localhost:8000/deals/1 -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"name":"Renamed"}'
 
 docker compose exec -T db psql -U crm -d crm -c \
-  "SELECT id, event_type, aggregate_id, payload->>'value' AS value,
-          payload->>'from_stage' AS from_stage, payload->>'to_stage' AS to_stage
+  "SELECT id, event_type, aggregate_id, payload->>'value' AS value
      FROM outbox_events ORDER BY id;"
 ```
 
-Backfilling aggregates that predate the outbox (rerunnable — a second run is a no-op):
+**The analytics service, reading that same log:**
 
 ```bash
-.venv/bin/python scripts/backfill_outbox.py --dry-run
-.venv/bin/python scripts/backfill_outbox.py
-```
-
-The Java service, consuming those same events:
-
-```bash
-# Wait ~2s for the poller, then see the projection it built
+# wait a couple of seconds for it to catch up, then:
 curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN"
-curl -s localhost:8081/analytics/forecast?horizonMonths=6 -H "Authorization: Bearer $TOKEN"
-curl -s localhost:8081/admin/outbox/status -H "Authorization: Bearer $TOKEN"   # lag, dead letters
+curl -s localhost:8081/admin/outbox/status -H "Authorization: Bearer $TOKEN"   # how far behind it is
 ```
 
-The rules engine. Age a deal into staleness, sweep, and watch the finding open — then
-resolve itself once contact resumes:
+**The rules engine.** Make a deal look like it's gone quiet, sweep for stale
+deals, watch a finding appear — then log activity and watch it clear:
 
 ```bash
 docker compose exec -T db psql -U crm -d crm -c \
@@ -349,132 +247,107 @@ docker compose exec -T db psql -U crm -d crm -c \
 curl -s -X POST localhost:8081/rules/run -H "Authorization: Bearer $TOKEN"
 curl -s "localhost:8081/rules/findings?status=open" -H "Authorization: Bearer $TOKEN"
 
-# Sweeping again does NOT duplicate the finding — the engine reconciles.
-curl -s -X POST localhost:8081/rules/run -H "Authorization: Bearer $TOKEN"
-
-# Log activity, sweep again, and it resolves.
 docker compose exec -T db psql -U crm -d crm -c \
   "UPDATE analytics.deal_projection SET last_activity_at = now() WHERE deal_id = 1;"
-curl -s -X POST localhost:8081/rules/run -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8081/rules/run -H "Authorization: Bearer $TOKEN"   # finding clears
 ```
 
-**The idempotency proof** — one command showing redelivery cannot corrupt the read model:
+**Proof that re-reading the log twice gives the same result** (this matters
+because it means the analytics database can always be safely rebuilt from
+scratch):
 
 ```bash
 curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN" > /tmp/before.json
 docker compose exec -T db psql -U crm -d crm -c \
   "TRUNCATE analytics.processed_event; UPDATE analytics.consumer_offset SET floor_event_id = 0;"
-sleep 8   # the poller replays every event from scratch
+sleep 8   # the analytics service reprocesses everything from the start
 curl -s localhost:8081/analytics/leaderboard -H "Authorization: Bearer $TOKEN" > /tmp/after.json
-diff /tmp/before.json /tmp/after.json && echo "IDEMPOTENT"
+diff /tmp/before.json /tmp/after.json && echo "IDENTICAL"
 ```
 
-### Outbox retention
+### How far behind is the analytics service, really?
 
-The outbox is append-only, so it needs pruning. One rule matters:
+The dashboard shows a live number of seconds. To see it as an actual
+measurement rather than a single live reading, there's a small benchmark
+that seeds 10,000 events at once and times how long they take to fully
+catch up:
+
+| Metric | Value |
+|---|---|
+| Typical (p50) delay | 55.18s |
+| Worst-case (p99) delay | 110.19s |
+| Time to rebuild everything from scratch (10,000 events) | 111.53s |
+
+Details and how to reproduce this in [docs/benchmarks.md](docs/benchmarks.md).
+
+### Keeping the log from growing forever
+
+The shared log only ever grows, so old entries eventually need to be cleared
+out:
 
 ```bash
 .venv/bin/python scripts/prune_outbox.py --dry-run
 .venv/bin/python scripts/prune_outbox.py --older-than-days 30
 ```
 
-**Never prune above the *minimum* floor across all consumers.** With one consumer that
-looks trivial; add a second that is behind or stopped and pruning to the fastest one's
-position silently deletes events the slower one has not read — a hole it can never
-recover from, because the outbox is the only record. The script refuses to run when no
-consumer is registered (an empty offset table means the consumer never started, not that
-its work is done), and anything pruned can no longer be replayed, which is the real cost
-of retention.
-
-### Consumer lag, quantified
-
-The Event pipeline dashboard tab and `/admin/outbox/status` show lag qualitatively --
-a number of seconds, right now. `scripts/bench_outbox_lag.py` turns "the consumer is
-behind" into a distribution: seed a 10,000-event burst, drain it, measure
-`processed_at - occurred_at` per event, then truncate the read model and time a full
-rebuild from the same burst.
-
-| Metric | Value |
-|---|---|
-| p50 consumer lag | 55.18s |
-| p99 consumer lag | 110.19s |
-| Full read-model rebuild (10,000 events) | 111.53s |
-
-Full numbers, methodology, and the "why p99 isn't close to p50" explanation in
-[docs/benchmarks.md](docs/benchmarks.md). Reproduce with
-`python scripts/bench_outbox_lag.py --count 10000 --force` against a disposable
-stack -- it's destructive (truncates the outbox and the read model), which is also
-why it isn't in CI.
+The one rule that matters: never delete anything the analytics service
+hasn't read yet — otherwise there's no way to recover that data later, since
+the log is the only copy of it.
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                       # 142, no network, no API key
-docker compose --profile test run --rm analytics-test      # 91 Java (60 unit, 31 integration)
+.venv/bin/python -m pytest tests/ -q                       # 142 Python tests
+docker compose --profile test run --rm analytics-test      # 91 Java tests
 ```
 
-Both suites run without an API key. The Java suite runs inside the build stage, where
-Maven and its dependency cache already live, against the real Postgres — so every
-statement is exercised against the actual Flyway-built schema.
+Both run without needing an API key or network access. That's also true in
+CI (`.github/workflows/ci.yml`), which runs both suites on every push with no
+secrets configured at all — possible because the AI assistants default to
+their rule-based stand-ins, described above.
 
-CI runs both on every push (`.github/workflows/ci.yml`) with no repository secrets,
-which is only possible because `LLM_PROVIDER` defaults to the deterministic stub. The
-Java job runs `alembic upgrade head` before `mvn verify`: the Java integration tests
-read a table Alembic owns, and that ordering is the contract between the two services
-made executable.
-
-## Layout
+## Project layout
 
 ```
-app/
-  models/      SQLAlchemy ORM — User, Company, Contact, Deal, Activity, OutboxEvent
-  schemas/     Pydantic request/response models
-  core/        security.py (JWT, bcrypt), keys.py (RSA signing key + JWKS),
-               rbac.py (role + stage rules)
-  api/         deps.py (auth dependencies), routes/
-  services/    business logic; returns (entity, event) so routes control publishing
-  events/      bus.py, schemas.py, handlers.py, outbox.py (event -> row)
-  agents/      llm.py (provider factory), stub.py, context.py, one package per agent
-  observability/  tracing.py -- opt-in OTel setup, off unless OTEL_EXPORTER_OTLP_ENDPOINT is set
-scripts/       seed.py, backfill_outbox.py, prune_outbox.py, bench_outbox_lag.py
-contracts/     shared event fixtures, asserted from BOTH languages
-tests/         142 tests; agent tests patch get_chat_model, never the network
+app/                          the CRM (Python / FastAPI)
+  models/      database tables — User, Company, Contact, Deal, Activity, OutboxEvent
+  api/         routes and request handling
+  services/    business logic
+  events/      builds and writes entries to the shared log
+  agents/      the three AI assistants
+  observability/  optional tracing setup
+scripts/       one-off scripts: seeding demo data, cleanup, the benchmark
+tests/         142 tests
+contracts/     the shared log's data format, checked from both languages
 
-analytics-service/           Java/Spring Boot, built by Maven inside Docker
-  outbox/      poller, dispatcher, per-event-type handlers (the consumer)
-  projection/  guarded upserts into the read model
-  analytics/   the four read-time aggregates + controller
-  rules/       condition tree, pure evaluator, engine, hourly scheduler
-  security/    JwtAuthFilter + JwksKeyProvider — verifies the CRM's tokens and,
-               holding no signing material, could not mint one
-  observability/  OutboxTracing -- resumes the CRM's trace instead of starting a new one
-  db/migration/  Flyway: V1 read model, V2 rules
+analytics-service/           the reporting service (Java / Spring Boot)
+  outbox/      reads the shared log
+  analytics/   the reports (leaderboard, funnel, forecast) + their API
+  rules/       the rules engine
+  security/    verifies logins from the CRM
 
-frontend/                    Next.js 15 / React 19 dashboard, its own container
-  app/         page.tsx (tab shell, theme), globals.css (design tokens)
-  components/  Pipeline, Agents, Rules, EventPipeline, Login, Charts
-  lib/api.ts   two typed clients — the CRM and the analytics service are
-               separate origins, and the dashboard talks to both directly
+frontend/                    the dashboard (Next.js)
+  components/  one file per dashboard tab
+  lib/api.ts   talks to both services directly
 ```
 
 ## Known limitations
 
-Named rather than hidden, because each is a deliberate trade:
+Listed here on purpose, rather than left for someone to discover:
 
-**The signing key is ephemeral unless you supply one.** With `JWT_PRIVATE_KEY` unset the
-CRM generates an RSA keypair at startup, so tokens do not survive a restart and two API
-replicas would sign with different keys. That is the price of a repo that runs with no
-setup, and it is a better price than a private key committed to source control. A real
-deployment sets the variable.
-
-**Lead scoring is still best-effort.** The in-process bus can drop a publish if the
-process dies before the background task runs. The event is durably in the outbox either
-way, so nothing is lost — but the agent may not see it. The fix is a second (Python)
-outbox consumer, at which point the bus and `BackgroundTasks` both go away.
-
-**Two services, one Postgres instance.** Access is grant-enforced and the shared surface
-is a single versioned contract table, but they still share the instance's resources.
-
-**Not in scope:** email sending (the follow-up agent only drafts), multi-turn agent
-conversations, and a hosted demo — every port binds to localhost, so the dashboard runs
-where the stack runs.
+- **Login tokens don't survive a restart** unless you set `JWT_PRIVATE_KEY`
+  yourself. By default the CRM generates a new signing key every time it
+  starts, which is what lets the whole project run with zero setup — the
+  trade-off is that a restart signs everyone out. A real deployment would
+  set this once and keep it fixed.
+- **The lead-scoring assistant can occasionally miss a new deal** if the CRM
+  crashes at exactly the wrong moment. Nothing is ever lost from the shared
+  log, but the "notify the assistant right away" path is a lighter-weight,
+  best-effort mechanism than the log itself.
+- **The two services share one database server**, even though they can't see
+  each other's tables. That's a reasonable trade for a project this size, but
+  a larger production system would likely give them separate databases too.
+- **Not included:** actually sending emails (the follow-up assistant only
+  drafts them), multi-turn conversations with the assistants, and a hosted
+  version of this you can visit online — everything here is meant to be run
+  on your own machine.
