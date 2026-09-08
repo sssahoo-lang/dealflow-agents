@@ -42,3 +42,29 @@ def get_chat_model(agent_name: str) -> Any:
     raise ValueError(
         f"Unknown LLM_PROVIDER {settings.llm_provider!r}. Expected 'stub' or 'anthropic'."
     )
+
+
+def describe_anthropic_error(exc: Exception) -> str:
+    """Turns an SDK exception into a message worth showing a caller.
+
+    The stub provider never fails, so nothing in this codebase had to think
+    about a model call going wrong until now. A real provider can: a bad key,
+    a rate limit, a network blip. Each needs a different message -- "check
+    your key" and "try again in a moment" are not the same instruction --
+    and none of them should leak an SDK stack trace to an API caller.
+
+    Import is local to keep `anthropic` an optional-at-import-time dependency
+    of this module: callers that never hit this path (the stub, most of the
+    test suite) don't need the package importable to use everything else here.
+    """
+    import anthropic
+
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "ANTHROPIC_API_KEY is missing or invalid."
+    if isinstance(exc, anthropic.RateLimitError):
+        return "The model provider is rate-limiting requests. Try again shortly."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Could not reach the model provider. Check network connectivity."
+    if isinstance(exc, anthropic.AnthropicError):
+        return f"The model provider returned an error: {exc}"
+    raise TypeError(f"Not an anthropic.AnthropicError: {type(exc).__name__}")
