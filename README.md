@@ -1,7 +1,7 @@
 # DealFlow Agents
 
 [![CI](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/sssahoo-lang/dealflow-agents/actions/workflows/ci.yml)
-&nbsp;233 automated tests run on every change — no API key or account needed to run them.
+&nbsp;257 automated tests run on every change — no API key or account needed to run them.
 
 ![Pipeline dashboard: KPI tiles, rep leaderboard, conversion funnel, stage velocity, and a weighted forecast chart](docs/screenshots/dashboard.png)
 
@@ -185,7 +185,19 @@ formula, but the follow-up email's wording is templated rather than written
 by a model.
 
 To use a real model instead, set `LLM_PROVIDER=anthropic` and add an
-`ANTHROPIC_API_KEY` in your `.env` file.
+`ANTHROPIC_API_KEY` in your `.env` file. If the model provider has a problem —
+a bad key, a rate limit, a network blip — the two assistants you call directly
+(follow-up drafting, ask-a-question) return a clear error instead of crashing;
+lead scoring runs in the background with nothing to return an error *to*, so a
+failure there is written to the server logs instead, and that deal simply
+stays unscored rather than blocking anything else. There's also a small set of
+tests (`tests/test_agents/test_live_anthropic.py`) that make one real call per
+assistant to prove the wiring actually works — skipped unless you run them
+with a real key:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... .venv/bin/pytest tests/test_agents/test_live_anthropic.py -v
+```
 
 ## Try it yourself
 
@@ -297,14 +309,17 @@ the log is the only copy of it.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q                       # 142 Python tests
+.venv/bin/python -m pytest tests/ -q                       # 166 Python tests
 docker compose --profile test run --rm analytics-test      # 91 Java tests
 ```
 
 Both run without needing an API key or network access. That's also true in
 CI (`.github/workflows/ci.yml`), which runs both suites on every push with no
 secrets configured at all — possible because the AI assistants default to
-their rule-based stand-ins, described above.
+their rule-based stand-ins, described above. Four more Python tests exist
+(`test_live_anthropic.py`) that make one real call each to prove the real
+model provider is wired up correctly — skipped here and in CI, and only run
+by hand with a real API key, as shown above.
 
 ## Project layout
 
@@ -317,7 +332,7 @@ app/                          the CRM (Python / FastAPI)
   agents/      the three AI assistants
   observability/  optional tracing setup
 scripts/       one-off scripts: seeding demo data, cleanup, the benchmark
-tests/         142 tests
+tests/         166 tests (+ 4 opt-in, needing a real API key)
 contracts/     the shared log's data format, checked from both languages
 
 analytics-service/           the reporting service (Java / Spring Boot)

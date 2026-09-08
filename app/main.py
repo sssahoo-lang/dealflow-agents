@@ -10,7 +10,7 @@ from app.config import settings
 from app.events.bus import event_bus
 from app.events.handlers import register_agent_handlers
 from app.observability.tracing import setup_tracing
-from app.services.errors import NotFound
+from app.services.errors import AgentUnavailable, NotFound
 
 logging.basicConfig(level=logging.INFO)
 
@@ -43,6 +43,14 @@ app.add_middleware(
 @app.exception_handler(NotFound)
 async def not_found_handler(request: Request, exc: NotFound):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(AgentUnavailable)
+async def agent_unavailable_handler(request: Request, exc: AgentUnavailable):
+    # 503, not 500: the request was well-formed and the app is healthy: the
+    # *model provider* is what's unavailable, and that distinction is what
+    # tells a caller whether retrying makes sense.
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 app.include_router(auth.router)

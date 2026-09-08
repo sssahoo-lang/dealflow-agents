@@ -163,3 +163,44 @@ def fake_llm(monkeypatch):
         return model
 
     return _install
+
+
+class FailingModel:
+    """Stands in for a real provider having a bad day -- raises on `invoke`
+    the way `ChatAnthropic` would if the underlying SDK call failed, rather
+    than the stub's always-succeeds behavior."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def with_structured_output(self, schema):
+        return self
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        raise self._exc
+
+
+@pytest.fixture
+def fake_llm_failure(monkeypatch):
+    """Same construction point as fake_llm, but the model raises instead of
+    returning -- the counterpart needed once a real, network-calling
+    provider exists to fail."""
+
+    def _install(exc: Exception):
+        model = FailingModel(exc)
+        monkeypatch.setattr("app.agents.llm.get_chat_model", lambda name: model)
+        monkeypatch.setattr(
+            "app.agents.lead_scoring.graph.get_chat_model", lambda name: model
+        )
+        monkeypatch.setattr(
+            "app.agents.follow_up.graph.get_chat_model", lambda name: model
+        )
+        monkeypatch.setattr(
+            "app.agents.nl_query.graph.get_chat_model", lambda name: model
+        )
+        return model
+
+    return _install
