@@ -20,12 +20,12 @@ rules engine — connected by a transactional outbox, not by an API call between
 
 ```mermaid
 flowchart LR
-    U["Rep / Admin"] --> D["Next.js dashboard\n:3000"]
-    D --> API["FastAPI CRM\n:8000"]
-    D --> AN["Java analytics\n:8081"]
+    U["Rep / Admin"] --> D["Next.js dashboard<br/>:3000"]
+    D --> API["FastAPI CRM<br/>:8000"]
+    D --> AN["Java analytics<br/>:8081"]
     API -->|"same transaction"| OB[("outbox_events")]
     OB -->|polls| AN
-    API -.->|"trace context"| T["Jaeger\n:16686"]
+    API -.->|"trace context"| T["Jaeger<br/>:16686"]
     AN -.->|"resumed trace"| T
 
     style OB fill:#fef3c7,stroke:#d97706
@@ -79,7 +79,7 @@ flowchart TD
         B --> D[("INSERT outbox_event")]
     end
 
-    D -->|commit| E[("outbox_events\n(durable log, append-only)")]
+    D -->|commit| E[("outbox_events<br/>(durable log, append-only)")]
     C -->|commit| E
 
     E -->|polls| F["Java analytics service"]
@@ -88,7 +88,7 @@ flowchart TD
 
     B -.->|BackgroundTasks, best-effort| I["EventBus"]
     I -.-> J["DealCreated"]
-    J -.-> K["lead_scoring graph (LangGraph)\nfetch_context → score_lead → [≥80?] → persist"]
+    J -.-> K["lead_scoring graph (LangGraph)<br/>fetch_context → score_lead → [≥80?] → persist"]
 
     style TX fill:#eef2ff,stroke:#6366f1
     style E fill:#fef3c7,stroke:#d97706
