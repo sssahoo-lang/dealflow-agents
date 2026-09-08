@@ -6,6 +6,9 @@ network calls, and no repository secrets**.
 
 ![Pipeline dashboard: KPI tiles, rep leaderboard, conversion funnel, stage velocity, and a weighted forecast chart with a labelled value axis](docs/screenshots/dashboard.png)
 
+![Jaeger trace waterfall for one deal: the dealflow-crm POST /deals span in teal, then a gap, then the dealflow-analytics outbox.dispatch span in amber resuming the SAME trace ID with the projection and ledger inserts nested underneath it](docs/screenshots/trace.png)
+*One trace, two services, one trace ID (`cc6f438`) — the claim in "Design decisions" below, not just the prose.*
+
 **Run it:** clone, `docker compose up -d --build`, then `docker compose exec -T api
 python scripts/seed.py` and open **http://localhost:3000** — no API key needed, no
 account to create. See [Setup](#setup) below for the full walkthrough, including the
