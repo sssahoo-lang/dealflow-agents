@@ -106,7 +106,36 @@ def test_handler_closes_its_session_even_when_the_agent_raises(monkeypatch):
     monkeypatch.setattr(handlers, "SessionLocal", lambda: FakeSession())
     monkeypatch.setattr(handlers.lead_scoring, "run", boom)
 
-    with pytest.raises(RuntimeError):
-        handlers.score_new_deal(DealCreated(deal_id=1, company_id=1, owner_id=1))
+    # Does NOT re-raise -- see the next test for why. Absence of an
+    # exception here is itself the assertion.
+    handlers.score_new_deal(DealCreated(deal_id=1, company_id=1, owner_id=1))
 
     assert closed == [True]
+
+
+def test_a_scoring_failure_is_logged_rather_than_lost(monkeypatch, caplog):
+    """This runs inside FastAPI's BackgroundTasks, with no request left to
+    return an error to. Left unhandled, the exception goes to asyncio's
+    default handler, not this logger -- invisible from an operator's point
+    of view, and the deal simply stays unscored with no trace of why. A real
+    provider (unlike the stub) can fail for reasons that have nothing to do
+    with this deal -- a bad key, a rate limit -- so a failure has to show up
+    in the logs somewhere, or "best-effort" quietly becomes "silently
+    broken."""
+    from app.events import handlers
+
+    class FakeSession:
+        def close(self):
+            pass
+
+    def boom(db, deal_id):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(handlers, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(handlers.lead_scoring, "run", boom)
+
+    with caplog.at_level("ERROR"):
+        handlers.score_new_deal(DealCreated(deal_id=7, company_id=1, owner_id=1))
+
+    assert any("deal 7" in r.message for r in caplog.records)
+    assert any(r.exc_info for r in caplog.records)  # the traceback, not just a line

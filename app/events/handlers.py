@@ -15,6 +15,16 @@ def score_new_deal(event: DealCreated) -> None:
     try:
         lead_scoring.run(db, event.deal_id)
         logger.info("scored deal %s", event.deal_id)
+    except Exception:
+        # Broader than the anthropic.AnthropicError caught at the HTTP routes
+        # on purpose: there's no request here to return an error to, so
+        # "best-effort" (see README) must not quietly become "best-effort and
+        # unobservable." An uncaught exception in a FastAPI BackgroundTask is
+        # handed to asyncio's default handler, not this logger -- swallowed
+        # from an operator's point of view. logger.exception() is what makes
+        # a real provider failure (or anything else) show up in the logs
+        # instead of vanishing along with the deal that never got scored.
+        logger.exception("lead scoring failed for deal %s", event.deal_id)
     finally:
         db.close()
 
